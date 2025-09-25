@@ -1,0 +1,3 @@
+datalad~=1.2.1
+datalad-metalad
+git-annex>0.8

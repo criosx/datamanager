@@ -1,5 +1,5 @@
 [project]
-name = "roadmap-datamanager"
+name = "roadmap_datamanager"
 version = "0.1.0"
 description = "Opinionated procedures & metadata exporter for scientific DataLad trees"
 authors = [{ name="Frank Heinrich", email="fheinrich@cmu.edu" }]
@@ -9,15 +9,26 @@ dependencies = [
   "filelock>=3.12",
   "pydantic>=2.7"
 ]
+
+[project.entry-points."datalad.extensions"]
+roadmap = "roadmap_datamanager:command_suite"
+
 # Optional: only needed if you use MetaLad
-optional-dependencies = { metalad = ["datalad-metalad>=0.4"] }
+[project.optional-dependencies]
+metalad = ["datalad-metalad>=0.4"]
 
 [project.scripts]
 scidata-export-metadata = "roadmap_datamanager.metalad_export:main"
 
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+include = ["roadmap_datamanager*"]
+
 [tool.setuptools.package-data]
 # Make procedures discoverable by DataLad
-"roadmap_datamanager" = ["resources/procedures/*.py"]
+roadmap_datamanager = ["resources/procedures/*.py"]
 
 [build-system]
 requires = ["setuptools>=68", "wheel"]

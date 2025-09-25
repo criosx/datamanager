@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Iterable, Optional
-from datalad import api as dl
+import datalad.api as dl
 
 
 @dataclass(frozen=True)

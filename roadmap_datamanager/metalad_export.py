@@ -9,7 +9,7 @@ def guess_kind(ds: Path) -> str | None:
     for k in ("models","templates","measurements","experimental_optimization"):
         if (ds/k).exists():
             return None  # looks like a node (experiment) not a single artifact
-    # if ds contains a .scidata/marker, you could read kind; here we fallback:
+    # if ds contains a .scidata/marker, you could read kind; here we fall back:
     return None
 
 
