@@ -12,7 +12,7 @@ ENV_ERRORS = []
 
 # 1) DataLad import
 try:
-    import datalad  # noqa: F401
+    import datalad
 except ImportError:
     ENV_ERRORS.append("datalad (Python package) not importable in this interpreter")
 

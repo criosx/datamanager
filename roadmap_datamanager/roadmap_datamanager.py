@@ -39,7 +39,6 @@ class DataManagerConfig:
     extractor_version: str = "1.0"
 
     # Runtime knobs
-    dry_run: bool = False
     verbose: bool = True
     env: Dict[str, str] = field(default_factory=dict)
     register_existing: bool = True
@@ -70,7 +69,6 @@ class DataManager:
         datalad_profile: Optional[str] = "text2git",
         extractor_name: str = "scidata_node_v1",
         extractor_version: str = "1.0",
-        dry_run: bool = False,
         verbose: bool = True,
         env: Optional[Dict[str, str]] = None,
         register_existing: bool = True,
@@ -85,7 +83,7 @@ class DataManager:
             default_project=default_project, default_campaign=default_campaign,
             datalad_profile=datalad_profile,
             extractor_name=extractor_name, extractor_version=extractor_version,
-            dry_run=dry_run, verbose=verbose, env=env or {},
+            verbose=verbose, env=env or {},
             register_existing=register_existing, now_fn=now_fn,
         )
 
@@ -97,55 +95,14 @@ class DataManager:
             if self.cfg.default_project or self.cfg.default_campaign:
                 print(f"[DataManager] defaults: project={self.cfg.default_project} "
                       f"campaign={self.cfg.default_campaign}")
-            print(f"[DataManager] profile={self.cfg.datalad_profile or '(none)'} "
-                  f"dry_run={self.cfg.dry_run}")
-
-    # ----------------------------- Public API ----------------------------- #
-
-    def init_tree(
-        self,
-        *,
-        project: Optional[str] = None,
-        campaign: Optional[str] = None,
-        user_display_name: Optional[str] = None,
-    ) -> None:
-        """
-        Ensure the (user)/(project)/(campaign) dataset tree exists and is registered.
-        Attach minimal JSON-LD at each level. Idempotent.
-        """
-        user_display_name = user_display_name or self.cfg.user_name
-
-        # up: root/user-level dataset (your prior code treated root as "user" node)
-        up = self.root
-        pp = up / project if project else None
-        cp = pp / campaign if (pp and campaign) else None
-
-        # Ensure/create datasets
-        self._ensure_dataset(up, superds=None)
-        self._save_meta(up, node_type="user", name=user_display_name)
-
-        if pp:
-            self._ensure_dataset(pp, superds=up)
-            self._save_meta(pp, node_type="project", name=project)
-
-        if cp:
-            self._ensure_dataset(cp, superds=pp)
-            self._save_meta(cp, node_type="campaign", name=campaign)
-
-        # Record state at the top-level, recursing into registered subs
-        if not self.cfg.dry_run:
-            dl.save(dataset=str(up), recursive=True,
-                    message=f"scidata: initialized tree for {user_display_name}/{project or ''}/{campaign or ''}")
-        if self.cfg.verbose:
-            print(f"[scidata] initialized/verified tree at {up} for "
-                  f"{user_display_name}/" + "/".join(x for x in (project, campaign) if x))
+            print(f"[DataManager] profile={self.cfg.datalad_profile or '(none)'} ")
 
     # ---------------------------- Core helpers ---------------------------- #
 
     def _ensure_dataset(self, path: Path, superds: Optional[Path]) -> None:
         """
         If dataset at `path` exists, (optionally) ensure it's registered in `superds`.
-        Otherwise create it (registered when superds is given).
+        Otherwise, create it (registered when superds is given).
         """
         path = Path(path).resolve()
         ds = Dataset(str(path))
@@ -156,13 +113,6 @@ class DataManager:
             return
 
         # Create (and register if superds is provided)
-        if self.cfg.dry_run:
-            if superds:
-                print(f"[dry-run] create subdataset: parent={superds} child={path}")
-            else:
-                print(f"[dry-run] create dataset: {path}")
-            return
-
         if superds is None:
             # top-level dataset
             dl.create(path=str(path), cfg_proc=self.cfg.datalad_profile)
@@ -175,25 +125,17 @@ class DataManager:
         # ensure child is actually inside superds
         self._ensure_is_subpath(Path(child.pathobj), Path(superds.pathobj))
 
-        if self.cfg.dry_run:
-            print(f"[dry-run] register existing subdataset: parent={superds.path} child={child.path}")
-            return
-
         # If already registered, this is a no-op (status=notneeded)
         dl.subdatasets(dataset=str(superds.path),
                        path=[str(Path(child.path).relative_to(superds.path))],
-                       add=True, # idempotent
                        on_failure="ignore",
                        return_type="list")
         dl.save(dataset=str(superds.path),
                 message=f"Register existing subdataset {os.path.relpath(child.path, superds.path)}")
 
     # --------------------------- Metadata helpers ------------------------- #
-
     def _save_meta(self, ds_path: Path, *, node_type: str, name: str) -> None:
         """Attach JSON-LD at dataset level using MetaLad (CLI)."""
-        if not self.cfg.metalad_enabled:
-            return
 
         ds = Dataset(str(ds_path))
         if not ds.is_installed():
@@ -221,10 +163,6 @@ class DataManager:
             },
         }
 
-        if self.cfg.dry_run:
-            print(f"[dry-run] meta-add -d {ds_path} … ({node_type}={name})")
-            return
-
         p = subprocess.Popen(
             ["datalad", "meta-add", "-d", str(ds_path), "-"],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=self._proc_env()
@@ -245,8 +183,7 @@ class DataManager:
         # Rare fallback
         p = subprocess.run(
             ["git", "-C", ds.path, "config", "-f", str(Path(ds.path) / ".datalad/config"),
-             "datalad.dataset.id"],
-            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=self._proc_env()
+             "datalad.dataset.id"], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=self._proc_env()
         )
         if p.returncode == 0 and p.stdout.strip():
             return p.stdout.strip()
@@ -277,3 +214,38 @@ class DataManager:
         env = os.environ.copy()
         env.update(self.cfg.env)
         return env
+
+    # ----------------------------- Public API ----------------------------- #
+
+    def init_tree(self, *, project: Optional[str] = None, campaign: Optional[str] = None,
+                  user_display_name: Optional[str] = None) -> None:
+        """
+        Ensure the (user)/(project)/(campaign) dataset tree exists and is registered.
+        Attach minimal JSON-LD at each level. Idempotent.
+        """
+        user_display_name = user_display_name or self.cfg.user_name
+
+        # up: root/user-level dataset (your prior code treated root as "user" node)
+        up = self.root
+        pp = up / project if project else None
+        cp = pp / campaign if (pp and campaign) else None
+
+        # Ensure/create datasets
+        self._ensure_dataset(up, superds=None)
+        self._save_meta(up, node_type="user", name=user_display_name)
+
+        if pp:
+            self._ensure_dataset(pp, superds=up)
+            self._save_meta(pp, node_type="project", name=project)
+
+        if cp:
+            self._ensure_dataset(cp, superds=pp)
+            self._save_meta(cp, node_type="campaign", name=campaign)
+
+        # Record state at the top-level, recursing into registered subs
+        dl.save(dataset=str(up), recursive=True,
+                message=f"scidata: initialized tree for {user_display_name}/{project or ''}/{campaign or ''}")
+        if self.cfg.verbose:
+            print(f"[scidata] initialized/verified tree at {up} for "
+                  f"{user_display_name}/" + "/".join(x for x in (project, campaign) if x))
+
