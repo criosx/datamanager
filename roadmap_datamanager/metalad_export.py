@@ -6,7 +6,7 @@ from datetime import datetime
 
 
 def guess_kind(ds: Path) -> str | None:
-    for k in ("models","templates","measurements","experimental_optimization"):
+    for k in ("models", "templates", "measurements", "experimental_optimization"):
         if (ds/k).exists():
             return None  # looks like a node (experiment) not a single artifact
     # if ds contains a .scidata/marker, you could read kind; here we fall back:
@@ -17,7 +17,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--dataset", default=".")
     ap.add_argument("--name", default=None)
-    ap.add_argument("--kind", choices=["models","templates","measurements","experimental_optimization"])
+    ap.add_argument("--kind", choices=["models", "templates", "measurements", "experimental_optimization"])
     args = ap.parse_args()
 
     ds = Path(args.dataset).resolve()
