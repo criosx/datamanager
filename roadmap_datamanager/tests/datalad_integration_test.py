@@ -76,17 +76,19 @@ class DataManagerE2ETest(unittest.TestCase):
         )
 
         # run twice to assert idempotency
-        dm.init_tree(project="roadmap", campaign="2025_summer")
-        dm.init_tree(project="roadmap", campaign="2025_summer")
+        dm.init_tree(project="roadmap", campaign="2025_summer", experiment="NR1_0")
+        dm.init_tree(project="roadmap", campaign="2025_summer", experiment="NR1_0")
 
         up = root
         pp = up / "roadmap"
         cp = pp / "2025_summer"
+        ep = cp / "NR1_0"
 
         # datasets exist
         self.assertTrue((up / ".datalad").exists())
         self.assertTrue((pp / ".datalad").exists())
         self.assertTrue((cp / ".datalad").exists())
+        self.assertTrue((ep / ".datalad").exists())
 
         # meta present at each level
         def has_meta(ds: Path, node_type: str, name: str) -> bool:
@@ -109,6 +111,7 @@ class DataManagerE2ETest(unittest.TestCase):
         self.assertTrue(has_meta(up, "user", "Frank Heinrich"))
         self.assertTrue(has_meta(pp, "project", "roadmap"))
         self.assertTrue(has_meta(cp, "campaign", "2025_summer"))
+        self.assertTrue(has_meta(ep, "experiment", "NR1_0"))
 
 
 if __name__ == "__main__":

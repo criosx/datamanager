@@ -1,8 +1,8 @@
 # datamanager.py
 from __future__ import annotations
 
+import json
 import os
-import shutil
 import subprocess
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -99,7 +99,7 @@ class DataManager:
 
     # ---------------------------- Core helpers ---------------------------- #
 
-    def _ensure_dataset(self, path: Path, superds: Optional[Path]) -> None:
+    def _ensure_dataset(self, path: Path, node_type, name, superds: Optional[Path]) -> None:
         """
         If dataset at `path` exists, (optionally) ensure it's registered in `superds`.
         Otherwise, create it (registered when superds is given).
@@ -119,6 +119,7 @@ class DataManager:
         else:
             # create and register as subdataset of superds in one API call
             dl.create(path=str(path), dataset=str(superds), cfg_proc=self.cfg.datalad_profile)
+        self._save_meta(path, node_type=node_type, name=name)
 
     def _register_existing(self, superds: Dataset, child: Dataset) -> None:
         """Register an already-instantiated child dataset in its superdataset."""
@@ -126,6 +127,7 @@ class DataManager:
         self._ensure_is_subpath(Path(child.pathobj), Path(superds.pathobj))
 
         # If already registered, this is a no-op (status=notneeded)
+        # TODO: That might not be true -> check.
         dl.subdatasets(dataset=str(superds.path),
                        path=[str(Path(child.path).relative_to(superds.path))],
                        on_failure="ignore",
@@ -167,7 +169,7 @@ class DataManager:
             ["datalad", "meta-add", "-d", str(ds_path), "-"],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=self._proc_env()
         )
-        out, err = p.communicate(self._json_dumps(payload))
+        out, err = p.communicate(json.dumps(payload))
         if p.returncode != 0:
             raise RuntimeError(f"meta-add failed for {ds_path} ({node_type}={name}): {err.strip()}")
 
@@ -206,46 +208,41 @@ class DataManager:
         except ValueError:
             raise RuntimeError(f"{child} is not inside super dataset {parent}")
 
-    @staticmethod
-    def _json_dumps(obj: Any) -> str:
-        return __import__("json").dumps(obj)
-
     def _proc_env(self) -> Dict[str, str]:
         env = os.environ.copy()
         env.update(self.cfg.env)
+        # Example: enforce non-interactive Git
+        env.setdefault("GIT_TERMINAL_PROMPT", "0")
         return env
 
     # ----------------------------- Public API ----------------------------- #
 
     def init_tree(self, *, project: Optional[str] = None, campaign: Optional[str] = None,
-                  user_display_name: Optional[str] = None) -> None:
+                  experiment: Optional[str] = None) -> None:
         """
         Ensure the (user)/(project)/(campaign) dataset tree exists and is registered.
         Attach minimal JSON-LD at each level. Idempotent.
         """
-        user_display_name = user_display_name or self.cfg.user_name
 
-        # up: root/user-level dataset (your prior code treated root as "user" node)
         up = self.root
         pp = up / project if project else None
         cp = pp / campaign if (pp and campaign) else None
+        ep = cp / experiment if (cp and experiment) else None
 
         # Ensure/create datasets
-        self._ensure_dataset(up, superds=None)
-        self._save_meta(up, node_type="user", name=user_display_name)
+        self._ensure_dataset(up, superds=None, node_type="user", name=self.cfg.user_name)
 
         if pp:
-            self._ensure_dataset(pp, superds=up)
-            self._save_meta(pp, node_type="project", name=project)
-
+            self._ensure_dataset(pp, superds=up, node_type="project", name=project)
         if cp:
-            self._ensure_dataset(cp, superds=pp)
-            self._save_meta(cp, node_type="campaign", name=campaign)
+            self._ensure_dataset(cp, superds=pp, node_type="campaign", name=campaign)
+        if ep:
+            self._ensure_dataset(ep, superds=cp, node_type="experiment", name=experiment)
 
         # Record state at the top-level, recursing into registered subs
         dl.save(dataset=str(up), recursive=True,
-                message=f"scidata: initialized tree for {user_display_name}/{project or ''}/{campaign or ''}")
+                message=f"scidata: initialized tree for {self.cfg.user_name}/{project or ''}/{campaign or ''}")
         if self.cfg.verbose:
             print(f"[scidata] initialized/verified tree at {up} for "
-                  f"{user_display_name}/" + "/".join(x for x in (project, campaign) if x))
+                  f"{self.cfg.user_name}/" + "/".join(x for x in (project, campaign) if x))
 
