@@ -171,7 +171,7 @@ class DataManager:
         dl.save(dataset=str(ds_path), path=[str(dst)], message=f"Add file {dst.name}")
         return dst
 
-    def _install_folder_as_datasets( self, src_dir: Path, cat_or_target_ds_path: Path, *, name: Optional[str],
+    def _install_folder_as_datasets(self, src_dir: Path, cat_or_target_ds_path: Path, *, name: Optional[str],
                                      move: bool) -> Path:
         """
         Recursively create a dataset hierarchy mirroring src_dir under cat_or_target_ds_path.
@@ -364,19 +364,10 @@ class DataManager:
             print(f"[scidata] initialized/verified tree at {up} for "
                   f"{self.cfg.user_name}/" + "/".join(x for x in (project, campaign) if x))
 
-    def install_into_tree(
-            self,
-            source: os.PathLike | str,
-            *,
-            project: Optional[str],
-            campaign: Optional[str],
-            experiment: str,
-            category: str,
-            dest_rel: Optional[os.PathLike | str] = None,  # path below category pointing to an existing dataset
-            name: Optional[str] = None,
-            move: bool = False,
-            metadata: Optional[Dict[str, Any]] = None,
-    ) -> Path:
+    def install_into_tree(self, source: os.PathLike | str, *, project: Optional[str], campaign: Optional[str],
+                          experiment: str, category: str, dest_rel: Optional[os.PathLike | str] = None,
+                          name: Optional[str] = None, move: bool = False, metadata: Optional[Dict[str, Any]]
+                          = None) -> Path:
         """
         Install a file or folder into {root}/{project}/{campaign}/{experiment}/{category}
         or into an *existing* dataset below the category when dest_rel is given.
@@ -386,7 +377,18 @@ class DataManager:
           - For files: add to the chosen dataset and save.
           - For folders: create subdatasets recursively under the chosen dataset.
           - Attach dataset-level metadata (includes file/folder name in .name field).
+        :param source: (str or path) source director of the file or folder to install.
+        :param project: (str) project identifier for target destination
+        :param campaign: (str) campaign identifier for target destination
+        :param experiment: (str) experiment identifier for target destination
+        :param category: (str) category for target destination
+        :param dest_rel: (str or path) relative path to destination folder from category
+        :param name: (str) name under which the file or folder will be installed.
+        :param move: (bool) move or copy file or folder
+        :param metadata: (json) additional metadata to add to file or folder (dataset).
+        :return:
         """
+
         src = Path(source).expanduser().resolve()
         if category not in ALLOWED_CATEGORIES:
             raise ValueError(f"category must be one of {ALLOWED_CATEGORIES}, got {category!r}")
