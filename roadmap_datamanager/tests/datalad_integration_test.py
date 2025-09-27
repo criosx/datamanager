@@ -1,3 +1,5 @@
+import datalad.api as dl
+
 import json
 import subprocess
 import tempfile
@@ -62,7 +64,6 @@ class TestEnvironment(unittest.TestCase):
 @unittest.skipUnless(ENV_READY, "Environment check failed; see TestEnvironment.test_000_requirements_present")
 class DataManagerInitTreeTest(unittest.TestCase):
     def test_init_tree_end_to_end(self):
-        import tempfile
         root_dir = tempfile.mkdtemp()
         root = Path(root_dir)
 
@@ -113,6 +114,7 @@ class DataManagerInitTreeTest(unittest.TestCase):
         self.assertTrue(has_meta(cp, "campaign", "2025_summer"))
         self.assertTrue(has_meta(ep, "experiment", "NR1_0"))
 
+
 @unittest.skipUnless(ENV_READY, "Environment check failed; see TestEnvironment.test_000_requirements_present")
 class DataManagerInstallIntoTreeTest(unittest.TestCase):
 
@@ -141,170 +143,168 @@ class DataManagerInstallIntoTreeTest(unittest.TestCase):
 
     def test_install_file_into_category_root(self):
         # Setup
-        with tempfile.TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir)
-            dm = DataManager(
-                root,
-                user_name="Frank Heinrich",
-                user_email="fheinrich@cmu.edu",
-                organization="CMU / NCNR",
-                default_project="roadmap",
-                datalad_profile="text2git",
-            )
-            dm.init_tree(project="roadmap", campaign="2025_summer", experiment="NR1_0")
+        root_dir = tempfile.mkdtemp()
+        root = Path(root_dir)
+        dm = DataManager(
+            root,
+            user_name="Frank Heinrich",
+            user_email="fheinrich@cmu.edu",
+            organization="CMU / NCNR",
+            default_project="roadmap",
+            datalad_profile="text2git",
+        )
+        dm.init_tree(project="roadmap", campaign="2025_summer", experiment="NR1_0")
 
-            up = root
-            ep = up / "roadmap" / "2025_summer" / "NR1_0"
-            cat = ep / "raw"
+        up = root
+        ep = up / "roadmap" / "2025_summer" / "NR1_0"
+        cat = ep / "raw"
 
-            # Source file
-            src = self._mk_temp_file(root, "sample_raw.dat", "abc123")
+        # Source file
+        src = self._mk_temp_file(root, "sample_raw.dat", "abc123")
 
-            # Act: install into category root (no dest_rel)
-            dm.install_into_tree(
-                source=src,
-                project="roadmap",
-                campaign="2025_summer",
-                experiment="NR1_0",
-                category="raw",
-            )
+        # Act: install into category root (no dest_rel)
+        dm.install_into_tree(
+            source=src,
+            project="roadmap",
+            campaign="2025_summer",
+            experiment="NR1_0",
+            category="raw",
+        )
 
-            # Assert: file lives under category dataset, not directly under experiment
-            self.assertTrue((cat / "sample_raw.dat").exists(), "file not copied into category dataset")
-            self.assertFalse((ep / "sample_raw.dat").exists(), "file must not be placed under experiment root")
+        # Assert: file lives under category dataset, not directly under experiment
+        self.assertTrue((cat / "sample_raw.dat").exists(), "file not copied into category dataset")
+        self.assertFalse((ep / "sample_raw.dat").exists(), "file must not be placed under experiment root")
 
-            # Category is a dataset
-            self.assertTrue((cat / ".datalad").exists(), "category is expected to be a dataset")
+        # Category is a dataset
+        self.assertTrue((cat / ".datalad").exists(), "category is expected to be a dataset")
 
-            # Metadata written at category level, including filename in the name field
-            self.assertTrue(self._has_meta(cat, node_type="category", name="raw (sample_raw.dat)"))
+        # Metadata written at category level, including filename in the name field
+        self.assertTrue(self._has_meta(cat, node_type="category", name="raw (sample_raw.dat)"))
 
     def test_install_folder_recursively_as_subdatasets(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir)
-            dm = DataManager(
-                root,
-                user_name="Frank Heinrich",
-                user_email="fheinrich@cmu.edu",
-                organization="CMU / NCNR",
-                default_project="roadmap",
-                datalad_profile="text2git",
-            )
-            dm.init_tree(project="roadmap", campaign="2025_summer", experiment="NR1_0")
+        root_dir = tempfile.mkdtemp()
+        root = Path(root_dir)
+        dm = DataManager(
+            root,
+            user_name="Frank Heinrich",
+            user_email="fheinrich@cmu.edu",
+            organization="CMU / NCNR",
+            default_project="roadmap",
+            datalad_profile="text2git",
+        )
+        dm.init_tree(project="roadmap", campaign="2025_summer", experiment="NR1_0")
 
-            ep = root / "roadmap" / "2025_summer" / "NR1_0"
-            cat = ep / "analysis"
+        ep = root / "roadmap" / "2025_summer" / "NR1_0"
+        cat = ep / "analysis"
 
-            # Build a small folder tree to import
-            src_dir = root / "to_import"
-            (src_dir / "subA").mkdir(parents=True, exist_ok=True)
-            (src_dir / "subB" / "deep").mkdir(parents=True, exist_ok=True)
-            (src_dir / "subA" / "a.txt").write_text("A")
-            (src_dir / "subB" / "deep" / "b.txt").write_text("B")
+        # Build a small folder tree to import
+        src_dir = root / "to_import"
+        (src_dir / "subA").mkdir(parents=True, exist_ok=True)
+        (src_dir / "subB" / "deep").mkdir(parents=True, exist_ok=True)
+        (src_dir / "subA" / "a.txt").write_text("A")
+        (src_dir / "subB" / "deep" / "b.txt").write_text("B")
 
-            # Act
-            dm.install_into_tree(
-                source=src_dir,
-                project="roadmap",
-                campaign="2025_summer",
-                experiment="NR1_0",
-                category="analysis",
-                name="bundleA",
-            )
+        # Act
+        dm.install_into_tree(
+            source=src_dir,
+            project="roadmap",
+            campaign="2025_summer",
+            experiment="NR1_0",
+            category="analysis",
+            name="bundleA",
+        )
 
-            top = cat / "bundleA"
-            subA = top / "subA"
-            deep = top / "subB" / "deep"
+        top = cat / "bundleA"
+        subA = top / "subA"
+        deep = top / "subB" / "deep"
 
-            # Each directory replicated as a dataset (subdatasets)
-            self.assertTrue((top / ".datalad").exists(), "top folder should be a dataset")
-            self.assertTrue((subA / ".datalad").exists(), "subA should be a dataset")
-            self.assertTrue((deep / ".datalad").exists(), "deep should be a dataset")
+        # Each directory replicated as a dataset (subdatasets)
+        self.assertTrue((top / ".datalad").exists(), "top folder should be a dataset")
+        self.assertTrue((subA / ".datalad").exists(), "subA should be a dataset")
+        self.assertTrue((deep / ".datalad").exists(), "deep should be a dataset")
 
-            # Files copied into their respective datasets
-            self.assertTrue((subA / "a.txt").exists())
-            self.assertTrue((deep / "b.txt").exists())
+        # Files copied into their respective datasets
+        self.assertTrue((subA / "a.txt").exists())
+        self.assertTrue((deep / "b.txt").exists())
 
-            # Metadata created on the top dataset for the folder
-            self.assertTrue(self._has_meta(top, node_type="dataset", name="bundleA"))
+        # Metadata created on the top dataset for the folder
+        self.assertTrue(self._has_meta(top, node_type="dataset", name="bundleA"))
 
     def test_install_into_existing_subdataset_with_dest_rel_file(self):
-        from datalad import api as dl
+        root_dir = tempfile.mkdtemp()
+        root = Path(root_dir)
+        dm = DataManager(
+            root,
+            user_name="Frank Heinrich",
+            user_email="fheinrich@cmu.edu",
+            organization="CMU / NCNR",
+            default_project="roadmap",
+            datalad_profile="text2git",
+        )
+        dm.init_tree(project="roadmap", campaign="2025_summer", experiment="NR1_0")
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir)
-            dm = DataManager(
-                root,
-                user_name="Frank Heinrich",
-                user_email="fheinrich@cmu.edu",
-                organization="CMU / NCNR",
-                default_project="roadmap",
-                datalad_profile="text2git",
-            )
-            dm.init_tree(project="roadmap", campaign="2025_summer", experiment="NR1_0")
+        ep = root / "roadmap" / "2025_summer" / "NR1_0"
+        cat = ep / "analysis"
 
-            ep = root / "roadmap" / "2025_summer" / "NR1_0"
-            cat = ep / "analysis"
+        # Ensure category dataset exists (e.g., by a no-op install of a tiny file)
+        priming_file = self._mk_temp_file(root, "prime.txt", "p")
+        dm.install_into_tree(
+            source=priming_file,
+            project="roadmap",
+            campaign="2025_summer",
+            experiment="NR1_0",
+            category="analysis",
+        )
 
-            # Ensure category dataset exists (e.g., by a no-op install of a tiny file)
-            priming_file = self._mk_temp_file(root, "prime.txt", "p")
-            dm.install_into_tree(
-                source=priming_file,
-                project="roadmap",
-                campaign="2025_summer",
-                experiment="NR1_0",
-                category="analysis",
-            )
+        # Create an existing subdataset at dest_rel ("run_001")
+        target = cat / "run_001"
+        dl.create(path=str(target), dataset=str(cat), cfg_proc="text2git")
+        # Save registration in category superdataset
+        dl.save(dataset=str(cat), message="register run_001 subdataset")
 
-            # Create an existing subdataset at dest_rel ("run_001")
-            target = cat / "run_001"
-            dl.create(path=str(target), dataset=str(cat), cfg_proc="text2git")
-            # Save registration in category superdataset
-            dl.save(dataset=str(cat), message="register run_001 subdataset")
+        # Now install a file into that existing subdataset
+        src = self._mk_temp_file(root, "result.csv", "x,y\n1,2\n")
+        dm.install_into_tree(
+            source=src,
+            project="roadmap",
+            campaign="2025_summer",
+            experiment="NR1_0",
+            category="analysis",
+            dest_rel="run_001",   # <- must already exist
+        )
 
-            # Now install a file into that existing subdataset
-            src = self._mk_temp_file(root, "result.csv", "x,y\n1,2\n")
+        # Assert: file is in the target subdataset
+        self.assertTrue((target / "result.csv").exists(), "file not placed into the dest_rel dataset")
+
+        # Metadata added to the target dataset, includes filename
+        self.assertTrue(self._has_meta(target, node_type="dataset", name="run_001 (result.csv)"))
+
+    def test_install_into_missing_target_raises(self):
+        root_dir = tempfile.mkdtemp()
+        root = Path(root_dir)
+        dm = DataManager(
+            root,
+            user_name="Frank Heinrich",
+            user_email="fheinrich@cmu.edu",
+            organization="CMU / NCNR",
+            default_project="roadmap",
+            datalad_profile="text2git",
+        )
+        dm.init_tree(project="roadmap", campaign="2025_summer", experiment="NR1_0")
+
+        # Build a source file at root
+        src = self._mk_temp_file(root, "x.bin", "data")
+
+        # Expect: dest_rel points to a non-existent dataset -> RuntimeError
+        with self.assertRaises(RuntimeError):
             dm.install_into_tree(
                 source=src,
                 project="roadmap",
                 campaign="2025_summer",
                 experiment="NR1_0",
                 category="analysis",
-                dest_rel="run_001",   # <- must already exist
+                dest_rel="missing_ds",   # <-- not created: should error by design
             )
-
-            # Assert: file is in the target subdataset
-            self.assertTrue((target / "result.csv").exists(), "file not placed into the dest_rel dataset")
-
-            # Metadata added to the target dataset, includes filename
-            self.assertTrue(self._has_meta(target, node_type="dataset", name="run_001 (result.csv)"))
-
-    def test_install_into_missing_target_raises(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir)
-            dm = DataManager(
-                root,
-                user_name="Frank Heinrich",
-                user_email="fheinrich@cmu.edu",
-                organization="CMU / NCNR",
-                default_project="roadmap",
-                datalad_profile="text2git",
-            )
-            dm.init_tree(project="roadmap", campaign="2025_summer", experiment="NR1_0")
-
-            # Build a source file
-            src = self._mk_temp_file(root, "x.bin", "data")
-
-            # Expect: dest_rel points to a non-existent dataset -> RuntimeError
-            with self.assertRaises(RuntimeError):
-                dm.install_into_tree(
-                    source=src,
-                    project="roadmap",
-                    campaign="2025_summer",
-                    experiment="NR1_0",
-                    category="analysis",
-                    dest_rel="missing_ds",   # <-- not created: should error by design
-                )
 
 
 if __name__ == "__main__":

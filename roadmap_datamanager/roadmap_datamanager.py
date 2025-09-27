@@ -153,6 +153,15 @@ class DataManager:
             dl.create(path=str(path), dataset=str(superds), cfg_proc=self.cfg.datalad_profile)
         self._save_meta(path, node_type=node_type, name=name)
 
+    @staticmethod
+    def _ensure_is_subpath(child: Path, parent: Path) -> None:
+        child = child.resolve()
+        parent = parent.resolve()
+        try:
+            child.relative_to(parent)
+        except ValueError:
+            raise RuntimeError(f"{child} is not inside super dataset {parent}")
+
     def _install_file_into_dataset(self, src: Path, ds_path: Path, *, move: bool) -> Path:
         """
         Place a single file into the given dataset and save it.
@@ -317,15 +326,6 @@ class DataManager:
             dl.save(dataset=str(ds.path), message="Initial commit (auto)")
             return ds.repo.get_hexsha()
 
-    @staticmethod
-    def _ensure_is_subpath(child: Path, parent: Path) -> None:
-        child = child.resolve()
-        parent = parent.resolve()
-        try:
-            child.relative_to(parent)
-        except ValueError:
-            raise RuntimeError(f"{child} is not inside super dataset {parent}")
-
     def _proc_env(self) -> Dict[str, str]:
         env = os.environ.copy()
         env.update(self.cfg.env)
@@ -377,6 +377,7 @@ class DataManager:
           - For files: add to the chosen dataset and save.
           - For folders: create subdatasets recursively under the chosen dataset.
           - Attach dataset-level metadata (includes file/folder name in .name field).
+
         :param source: (str or path) source director of the file or folder to install.
         :param project: (str) project identifier for target destination
         :param campaign: (str) campaign identifier for target destination
@@ -386,7 +387,7 @@ class DataManager:
         :param name: (str) name under which the file or folder will be installed.
         :param move: (bool) move or copy file or folder
         :param metadata: (json) additional metadata to add to file or folder (dataset).
-        :return:
+        :return: path to destination
         """
 
         src = Path(source).expanduser().resolve()
