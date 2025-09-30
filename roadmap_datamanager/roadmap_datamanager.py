@@ -4,6 +4,8 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import time
+
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -53,7 +55,6 @@ ALLOWED_CATEGORIES = [
     "raw", "reduced", "measurement", "analysis",
     "template", "experimental_optimization", "model",
 ]
-
 
 # -------------------------------- Manager -------------------------------- #
 
@@ -107,9 +108,9 @@ class DataManager:
                       f"campaign={self.cfg.default_campaign}")
             print(f"[DataManager] profile={self.cfg.datalad_profile or '(none)'} ")
 
-    def _add_git_only_sibling_recursive(self, *, name: str, git_host: str, remote_abs_path: str, recursive: bool):
+    def _add_git_only_sibling_recursive(self, *, name: str, ssh_host: str, remote_abs_path: str, recursive: bool):
         # Top-level: add sibling via ssh:// URL to the *existing* bare repo
-        top_url = f"ssh://{git_host}{remote_abs_path}"
+        top_url = f"ssh://{ssh_host}{remote_abs_path}"
         dl.siblings(action="add", dataset=str(self.root), name=name, url=top_url, result_renderer="disabled")
 
         if not recursive:
@@ -126,15 +127,19 @@ class DataManager:
             sub_bare = base_dir / rel.with_suffix(".git")  # e.g. .../scidata/p/c/e/analysis.git
 
             # provision each sub-bare on the server (full shell host)
-            self._ssh_exec(ssh_user_host=self._provision_host, cmd=f"mkdir -p {sub_bare.parent}")
-            self._ssh_exec(ssh_user_host=self._provision_host,
-                      cmd=f"bash -lc 'rm -rf {sub_bare} && git init --bare --shared=group {sub_bare} && "
-                          f"git -C {sub_bare} config receive.denyNonFastforwards true && "
-                          f"git -C {sub_bare} config http.receivepack true'")
+            cmd = f"""bash -lc '
+              set -euo pipefail
+              mkdir -p {sub_bare.parent}
+              rm -rf {sub_bare}
+              git init --bare --shared=group {sub_bare}
+              git -C {sub_bare} config receive.denyNonFastforwards true
+              git -C {sub_bare} config http.receivepack true
+            '"""
+            self._ssh_exec(ssh_user_host=ssh_host, cmd=cmd)
 
             # add the sibling to the local subdataset via ssh:// URL
             dl.siblings(action="add", dataset=str(sd_path), name=name,
-                        url=f"ssh://{git_host}{sub_bare}", result_renderer="disabled")
+                        url=f"ssh://{ssh_host}{sub_bare}", result_renderer="disabled")
 
     def _get_dataset_version(self, ds: Dataset) -> str:
         try:
@@ -348,9 +353,33 @@ class DataManager:
         dl.save(dataset=str(ds_path), message=f"scidata: metadata for {node_type}={name}")
 
     @staticmethod
-    def _ssh_exec(ssh_user_host: str, cmd: str) -> subprocess.CompletedProcess:
-        return subprocess.run(["ssh", ssh_user_host, cmd],
-                              check=True, text=True, capture_output=True)
+    def _ssh_exec(*, ssh_user_host: str, cmd: str, capture_output: bool = False,
+                  attempts: int = 3, base_sleep: float = 0.4):
+        """
+        Run a remote shell command with mild retry/backoff and sensible SSH options.
+        """
+        ssh_cmd = [
+            "ssh",
+            "-o", "BatchMode=yes",
+            "-o", "ConnectTimeout=8",
+            "-o", "ConnectionAttempts=2",
+            ssh_user_host,
+            cmd,
+        ]
+        last_exc = None
+        for i in range(attempts):
+            try:
+                return subprocess.run(
+                    ssh_cmd,
+                    check=True, text=True,
+                    stdout=(subprocess.PIPE if capture_output else None),
+                    stderr=(subprocess.PIPE if capture_output else None),
+                )
+            except subprocess.CalledProcessError as e:
+                last_exc = e
+                if i == attempts - 1:
+                    raise
+                time.sleep(base_sleep * (2 ** i))
 
     @staticmethod
     def _ssh_exec_out(ssh_user_host: str, cmd: str) -> str:
@@ -472,24 +501,27 @@ class DataManager:
             self,
             *,
             name: str = "origin",
-            provision_host: str = "bluehost-full",  # shell-capable
-            git_host: str = "bluehost-data",  # git-only
+            ssh_host: str = 'default',  # requires shell-capable host
             remote_abs_path: str = "/home2/frankhei/gittest/scidata.git",
             recursive: bool = True,
             nuke_remote: bool = False,
             force: bool = False,
             whitelist_root: str = "/home2/frankhei/gittest",
     ) -> None:
+
         rp = Path(remote_abs_path)
-        if not force: raise RuntimeError("force=True required")
-        if not rp.is_absolute(): raise RuntimeError("remote_abs_path must be absolute")
+        if not force:
+            raise RuntimeError("force=True required")
+        if not rp.is_absolute():
+            raise RuntimeError("remote_abs_path must be absolute")
         if not str(rp).startswith(str(Path(whitelist_root)) + "/") and str(rp) != str(Path(whitelist_root)):
             raise RuntimeError(f"remote_abs_path must be under {whitelist_root}")
 
         # remote prep with full shell
-        subprocess.run(["ssh", provision_host, f"mkdir -p {rp.parent}"], check=True, text=True)
+        self._ssh_exec()
+        subprocess.run(["ssh", ssh_host, f"mkdir -p {rp.parent}"], check=True, text=True)
         probe = subprocess.run(
-            ["ssh", provision_host,
+            ["ssh", ssh_host,
              f"bash -lc 'if [ -e {rp} ]; then "
              f"  if [ -z \"$(ls -A {rp} 2>/dev/null)\" ]; then echo EMPTY; "
              f"  else echo NONEMPTY; fi; else echo MISSING; fi'"],
@@ -499,20 +531,21 @@ class DataManager:
         if probe == "NONEMPTY" and not nuke_remote:
             raise RuntimeError(f"Remote path exists and is non-empty: {rp}. Set nuke_remote=True to wipe.")
         if probe in ("NONEMPTY", "EMPTY"):
-            subprocess.run(["ssh", provision_host, f"rm -rf {rp}"], check=True, text=True)
+            self._ssh_exec(ssh_user_host=ssh_host,
+                           cmd=f"rm -rf {rp}")
 
-        subprocess.run(
-            ["ssh", provision_host,
-             f"bash -lc 'git init --bare --shared=group {rp} && "
-             f"git -C {rp} config receive.denyNonFastforwards true && "
-             f"git -C {rp} config http.receivepack true'"],
-            check=True, text=True
+        self._ssh_exec(ssh_user_host=ssh_host,
+                       cmd=f"bash -lc 'git init --bare --shared=group {rp} && "
+                           f"git -C {rp} config receive.denyNonFastforwards true && "
+                           f"git -C {rp} config http.receivepack true'")
+
+        # after you provision the TOP bare repo on the server:
+        self._add_git_only_sibling_recursive(
+            name=name,
+            ssh_host=ssh_host,
+            remote_abs_path=remote_abs_path,
+            recursive=recursive
         )
-
-        # wire with DataLad using git-only alias
-        ssh_url = f"ssh://{git_host}{remote_abs_path}"
-        dl.create_sibling(dataset=str(self.root), name=name, sshurl=ssh_url,
-                          existing="replace", recursive=recursive, shared="group")
         dl.push(dataset=str(self.root), to=name, recursive=recursive)
         if self.cfg.verbose:
-            print(f"[scidata] Reset sibling '{name}' at {ssh_url} and pushed (recursive={recursive}).")
+            print(f"[scidata] Reset sibling '{name}' at {ssh_host} and pushed (recursive={recursive}).")

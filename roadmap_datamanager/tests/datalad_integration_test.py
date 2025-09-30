@@ -51,7 +51,6 @@ if annex_err:
 
 ENV_READY = not ENV_ERRORS
 
-
 SSH_HOST_SHELL = os.getenv("SCIDATA_TEST_SSH_HOST_SHELL", "bluehost-full")
 SSH_HOST_GIT = os.getenv("SCIDATA_TEST_SSH_HOST_GIT",   "bluehost-data")
 GIT_BASE = os.getenv("SCIDATA_TEST_GIT_BASE", "/home2/frankhei/gittest")
@@ -368,8 +367,7 @@ class DataManagerResetSiblingTest(unittest.TestCase):
     def test_happy_path(self):
         self.dm.reset_git_sibling(
             name="origin",
-            provision_host=SSH_HOST_SHELL,
-            git_host=SSH_HOST_GIT,
+            ssh_host=SSH_HOST_SHELL,
             remote_abs_path=self.remote_path,
             recursive=True, nuke_remote=True, force=True,
             whitelist_root=WHITELIST,
@@ -386,8 +384,7 @@ class DataManagerResetSiblingTest(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             self.dm.reset_git_sibling(
                 name="origin",
-                provision_host=SSH_HOST_SHELL,
-                git_host=SSH_HOST_GIT,
+                ssh_host=SSH_HOST_SHELL,
                 remote_abs_path=self.remote_path,
                 recursive=True,
                 nuke_remote=False,
@@ -399,8 +396,7 @@ class DataManagerResetSiblingTest(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             self.dm.reset_git_sibling(
                 name="origin",
-                provision_host=SSH_HOST_SHELL,
-                git_host=SSH_HOST_GIT,
+                ssh_host=SSH_HOST_SHELL,
                 remote_abs_path=self.remote_path,
                 recursive=True,
                 nuke_remote=True,
@@ -412,8 +408,7 @@ class DataManagerResetSiblingTest(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             self.dm.reset_git_sibling(
                 name="origin",
-                provision_host=SSH_HOST_SHELL,
-                git_host=SSH_HOST_GIT,
+                ssh_host=SSH_HOST_SHELL,
                 remote_abs_path=f"/home2/frankhei/NOT-ALLOWED/scidata.git",
                 recursive=True,
                 nuke_remote=True,
