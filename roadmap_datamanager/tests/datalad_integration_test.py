@@ -1,9 +1,12 @@
 import datalad.api as dl
 
 import json
+import os
 import subprocess
 import tempfile
 import unittest
+import uuid
+
 from pathlib import Path
 
 from roadmap_datamanager.roadmap_datamanager import DataManager
@@ -47,6 +50,28 @@ if annex_err:
     ENV_ERRORS.append(annex_err)
 
 ENV_READY = not ENV_ERRORS
+
+
+SSH_HOST_SHELL = os.getenv("SCIDATA_TEST_SSH_HOST_SHELL", "bluehost-full")
+SSH_HOST_GIT = os.getenv("SCIDATA_TEST_SSH_HOST_GIT",   "bluehost-data")
+GIT_BASE = os.getenv("SCIDATA_TEST_GIT_BASE", "/home2/frankhei/gittest")
+WHITELIST = os.getenv("SCIDATA_TEST_WHITELIST", "/home2/frankhei/gittest")
+
+
+def _ssh_ok(host):  # shell or git
+    try:
+        subprocess.run(["ssh","-o","BatchMode=yes","-o","ConnectTimeout=6",host,"exit 0"],
+                       check=True, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        return True
+    except Exception:
+        return False
+
+
+def _ssh(host_cmd: str) -> None:
+    subprocess.run(["ssh", SSH_HOST_SHELL, host_cmd], check=True, text=True)
+
+def _ensure_remote_base():
+    _ssh(f"mkdir -p {GIT_BASE}")
 
 
 class TestEnvironment(unittest.TestCase):
@@ -307,5 +332,91 @@ class DataManagerInstallIntoTreeTest(unittest.TestCase):
             )
 
 
-if __name__ == "__main__":
-    unittest.main()
+@unittest.skipUnless(_ssh_ok(SSH_HOST_SHELL), "Shell SSH host not reachable")
+class DataManagerResetSiblingTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        if not _ssh_ok(SSH_HOST_SHELL):
+            raise unittest.SkipTest("Shell SSH host not reachable")
+        _ensure_remote_base()
+
+    def setUp(self):
+        # local dataset with one subdataset so we exercise recursion
+        self.work = Path(tempfile.mkdtemp())
+        self.root = self.work / "scidata"
+        self.dm = DataManager(
+            self.root,
+            user_name="Frank Heinrich",
+            user_email="fheinrich@cmu.edu",
+            datalad_profile="text2git",
+        )
+        self.dm.init_tree(project="p", campaign="c", experiment="e")
+        sub = self.root / "p" / "c" / "e" / "analysis"
+        dl.create(path=str(sub), dataset=str(self.root / "p" / "c" / "e"), cfg_proc="text2git")
+        dl.save(dataset=str(self.root), recursive=True, message="add analysis subdataset")
+
+        # per-test unique bare path on the real server
+        self.remote_path = f"{GIT_BASE}/scidata-{uuid.uuid4().hex}.git"
+
+    def _assert_bare_and_has_refs(self, remote_abs_path: str):
+        # Check bare via remote git (exec on server)
+        _ssh(f"bash -lc 'git -C {remote_abs_path} rev-parse --is-bare-repository'")
+        # Must have at least one head after push
+        _ssh(f"bash -lc 'test -d {remote_abs_path}/refs/heads && "
+             f"ls -1 {remote_abs_path}/refs/heads | grep -q .'" )
+
+    def test_happy_path(self):
+        self.dm.reset_git_sibling(
+            name="origin",
+            provision_host=SSH_HOST_SHELL,
+            git_host=SSH_HOST_GIT,
+            remote_abs_path=self.remote_path,
+            recursive=True, nuke_remote=True, force=True,
+            whitelist_root=WHITELIST,
+        )
+        # assert bare & refs exist on server
+        subprocess.run(["ssh", SSH_HOST_SHELL, f"bash -lc 'git -C {self.remote_path} rev-parse --is-bare-repository'"],
+                       check=True, text=True)
+        subprocess.run(["ssh", SSH_HOST_SHELL, f"bash -lc 'ls -1 {self.remote_path}/refs/heads | grep -q .'"],
+                       check=True, text=True)
+
+    def test_nonempty_requires_nuke(self):
+        # Pre-create and make non-empty
+        _ssh(f"mkdir -p {self.remote_path} && touch {self.remote_path}/SOMETHING")
+        with self.assertRaises(RuntimeError):
+            self.dm.reset_git_sibling(
+                name="origin",
+                provision_host=SSH_HOST_SHELL,
+                git_host=SSH_HOST_GIT,
+                remote_abs_path=self.remote_path,
+                recursive=True,
+                nuke_remote=False,
+                force=True,
+                whitelist_root=WHITELIST,
+            )
+
+    def test_refuses_without_force(self):
+        with self.assertRaises(RuntimeError):
+            self.dm.reset_git_sibling(
+                name="origin",
+                provision_host=SSH_HOST_SHELL,
+                git_host=SSH_HOST_GIT,
+                remote_abs_path=self.remote_path,
+                recursive=True,
+                nuke_remote=True,
+                force=False,
+                whitelist_root=WHITELIST,
+            )
+
+    def test_refuses_outside_whitelist(self):
+        with self.assertRaises(RuntimeError):
+            self.dm.reset_git_sibling(
+                name="origin",
+                provision_host=SSH_HOST_SHELL,
+                git_host=SSH_HOST_GIT,
+                remote_abs_path=f"/home2/frankhei/NOT-ALLOWED/scidata.git",
+                recursive=True,
+                nuke_remote=True,
+                force=True,
+                whitelist_root=WHITELIST,
+            )

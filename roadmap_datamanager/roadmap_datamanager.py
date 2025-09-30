@@ -57,6 +57,7 @@ ALLOWED_CATEGORIES = [
 
 # -------------------------------- Manager -------------------------------- #
 
+
 class DataManager:
     """
     Create (user)/(project)/(campaign) as nested DataLad datasets and attach JSON-LD
@@ -82,6 +83,7 @@ class DataManager:
         register_existing: bool = True,
         now_fn: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
     ) -> None:
+
         self.root: Path = Path(root).expanduser().resolve()
         self.root.mkdir(parents=True, exist_ok=True)
 
@@ -105,7 +107,49 @@ class DataManager:
                       f"campaign={self.cfg.default_campaign}")
             print(f"[DataManager] profile={self.cfg.datalad_profile or '(none)'} ")
 
-    # ---------------------------- Core helpers ---------------------------- #
+    def _add_git_only_sibling_recursive(self, *, name: str, git_host: str, remote_abs_path: str, recursive: bool):
+        # Top-level: add sibling via ssh:// URL to the *existing* bare repo
+        top_url = f"ssh://{git_host}{remote_abs_path}"
+        dl.siblings(action="add", dataset=str(self.root), name=name, url=top_url, result_renderer="disabled")
+
+        if not recursive:
+            return
+
+        # Sub-bare repos live under <parent>/<stem>/... e.g. /path/scidata.git -> /path/scidata/<rel>.git
+        top_bare = Path(remote_abs_path)
+        base_dir = top_bare.parent / top_bare.stem  # e.g. /home2/.../gittest/scidata
+
+        # Create sub-bare repos and add siblings for each subdataset
+        for sd in dl.subdatasets(dataset=str(self.root), recursive=True, return_type="generator"):
+            sd_path = Path(sd["path"])
+            rel = sd_path.relative_to(self.root)  # e.g. p/c/e/analysis
+            sub_bare = base_dir / rel.with_suffix(".git")  # e.g. .../scidata/p/c/e/analysis.git
+
+            # provision each sub-bare on the server (full shell host)
+            self._ssh_exec(ssh_user_host=self._provision_host, cmd=f"mkdir -p {sub_bare.parent}")
+            self._ssh_exec(ssh_user_host=self._provision_host,
+                      cmd=f"bash -lc 'rm -rf {sub_bare} && git init --bare --shared=group {sub_bare} && "
+                          f"git -C {sub_bare} config receive.denyNonFastforwards true && "
+                          f"git -C {sub_bare} config http.receivepack true'")
+
+            # add the sibling to the local subdataset via ssh:// URL
+            dl.siblings(action="add", dataset=str(sd_path), name=name,
+                        url=f"ssh://{git_host}{sub_bare}", result_renderer="disabled")
+
+    def _get_dataset_version(self, ds: Dataset) -> str:
+        try:
+            return ds.repo.get_hexsha()
+        except Exception:
+            # Ensure there is at least one commit to reference
+            dl.save(dataset=str(ds.path), message="Initial commit (auto)")
+            return ds.repo.get_hexsha()
+
+    def _proc_env(self) -> Dict[str, str]:
+        env = os.environ.copy()
+        env.update(self.cfg.env)
+        # Example: enforce non-interactive Git
+        env.setdefault("GIT_TERMINAL_PROMPT", "0")
+        return env
 
     def _ensure_experiment_category(
         self, project: Optional[str], campaign: Optional[str], experiment: str, category: str
@@ -303,7 +347,16 @@ class DataManager:
         # Commit metadata in this dataset (even if not yet registered by parent)
         dl.save(dataset=str(ds_path), message=f"scidata: metadata for {node_type}={name}")
 
-    # ------------------------------ Utilities ---------------------------- #
+    @staticmethod
+    def _ssh_exec(ssh_user_host: str, cmd: str) -> subprocess.CompletedProcess:
+        return subprocess.run(["ssh", ssh_user_host, cmd],
+                              check=True, text=True, capture_output=True)
+
+    @staticmethod
+    def _ssh_exec_out(ssh_user_host: str, cmd: str) -> str:
+        p = subprocess.run(["ssh", ssh_user_host, cmd],
+                           check=True, text=True, capture_output=True)
+        return p.stdout
 
     def _get_dataset_id(self, ds: Dataset) -> str:
         # Prefer DataLad property; fallback to reading .datalad/config via Git if needed
@@ -318,20 +371,6 @@ class DataManager:
             return p.stdout.strip()
         raise RuntimeError(f"Could not read dataset id in {ds.path}")
 
-    def _get_dataset_version(self, ds: Dataset) -> str:
-        try:
-            return ds.repo.get_hexsha()
-        except Exception:
-            # Ensure there is at least one commit to reference
-            dl.save(dataset=str(ds.path), message="Initial commit (auto)")
-            return ds.repo.get_hexsha()
-
-    def _proc_env(self) -> Dict[str, str]:
-        env = os.environ.copy()
-        env.update(self.cfg.env)
-        # Example: enforce non-interactive Git
-        env.setdefault("GIT_TERMINAL_PROMPT", "0")
-        return env
 
     # ----------------------------- Public API ----------------------------- #
 
@@ -429,3 +468,51 @@ class DataManager:
             self._save_meta(top_created, node_type="dataset", name=(name or src.name))
             return top_created
 
+    def reset_git_sibling(
+            self,
+            *,
+            name: str = "origin",
+            provision_host: str = "bluehost-full",  # shell-capable
+            git_host: str = "bluehost-data",  # git-only
+            remote_abs_path: str = "/home2/frankhei/gittest/scidata.git",
+            recursive: bool = True,
+            nuke_remote: bool = False,
+            force: bool = False,
+            whitelist_root: str = "/home2/frankhei/gittest",
+    ) -> None:
+        rp = Path(remote_abs_path)
+        if not force: raise RuntimeError("force=True required")
+        if not rp.is_absolute(): raise RuntimeError("remote_abs_path must be absolute")
+        if not str(rp).startswith(str(Path(whitelist_root)) + "/") and str(rp) != str(Path(whitelist_root)):
+            raise RuntimeError(f"remote_abs_path must be under {whitelist_root}")
+
+        # remote prep with full shell
+        subprocess.run(["ssh", provision_host, f"mkdir -p {rp.parent}"], check=True, text=True)
+        probe = subprocess.run(
+            ["ssh", provision_host,
+             f"bash -lc 'if [ -e {rp} ]; then "
+             f"  if [ -z \"$(ls -A {rp} 2>/dev/null)\" ]; then echo EMPTY; "
+             f"  else echo NONEMPTY; fi; else echo MISSING; fi'"],
+            check=True, capture_output=True, text=True
+        ).stdout.strip()
+
+        if probe == "NONEMPTY" and not nuke_remote:
+            raise RuntimeError(f"Remote path exists and is non-empty: {rp}. Set nuke_remote=True to wipe.")
+        if probe in ("NONEMPTY", "EMPTY"):
+            subprocess.run(["ssh", provision_host, f"rm -rf {rp}"], check=True, text=True)
+
+        subprocess.run(
+            ["ssh", provision_host,
+             f"bash -lc 'git init --bare --shared=group {rp} && "
+             f"git -C {rp} config receive.denyNonFastforwards true && "
+             f"git -C {rp} config http.receivepack true'"],
+            check=True, text=True
+        )
+
+        # wire with DataLad using git-only alias
+        ssh_url = f"ssh://{git_host}{remote_abs_path}"
+        dl.create_sibling(dataset=str(self.root), name=name, sshurl=ssh_url,
+                          existing="replace", recursive=recursive, shared="group")
+        dl.push(dataset=str(self.root), to=name, recursive=recursive)
+        if self.cfg.verbose:
+            print(f"[scidata] Reset sibling '{name}' at {ssh_url} and pushed (recursive={recursive}).")
