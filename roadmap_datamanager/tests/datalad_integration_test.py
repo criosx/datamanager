@@ -362,7 +362,7 @@ class DataManagerResetSiblingTest(unittest.TestCase):
         _ssh(f"bash -lc 'git -C {remote_abs_path} rev-parse --is-bare-repository'")
         # Must have at least one head after push
         _ssh(f"bash -lc 'test -d {remote_abs_path}/refs/heads && "
-             f"ls -1 {remote_abs_path}/refs/heads | grep -q .'" )
+             f"ls -1 {remote_abs_path}/refs/heads | grep -q .'")
 
     def test_happy_path(self):
         self.dm.reset_git_sibling(

@@ -381,11 +381,6 @@ class DataManager:
                     raise
                 time.sleep(base_sleep * (2 ** i))
 
-    @staticmethod
-    def _ssh_exec_out(ssh_user_host: str, cmd: str) -> str:
-        p = subprocess.run(["ssh", ssh_user_host, cmd],
-                           check=True, text=True, capture_output=True)
-        return p.stdout
 
     def _get_dataset_id(self, ds: Dataset) -> str:
         # Prefer DataLad property; fallback to reading .datalad/config via Git if needed
@@ -518,21 +513,16 @@ class DataManager:
             raise RuntimeError(f"remote_abs_path must be under {whitelist_root}")
 
         # remote prep with full shell
-        self._ssh_exec()
-        subprocess.run(["ssh", ssh_host, f"mkdir -p {rp.parent}"], check=True, text=True)
-        probe = subprocess.run(
-            ["ssh", ssh_host,
-             f"bash -lc 'if [ -e {rp} ]; then "
-             f"  if [ -z \"$(ls -A {rp} 2>/dev/null)\" ]; then echo EMPTY; "
-             f"  else echo NONEMPTY; fi; else echo MISSING; fi'"],
-            check=True, capture_output=True, text=True
-        ).stdout.strip()
+        self._ssh_exec(ssh_user_host=ssh_host, cmd=f"mkdir -p {rp.parent}")
+        probe = self._ssh_exec(ssh_user_host=ssh_host, capture_output=True,
+                               cmd=f"bash -lc 'if [ -e {rp} ]; then "
+                                   f"  if [ -z \"$(ls -A {rp} 2>/dev/null)\" ]; then echo EMPTY; "
+                                   f"  else echo NONEMPTY; fi; else echo MISSING; fi'").stdout.strip()
 
         if probe == "NONEMPTY" and not nuke_remote:
             raise RuntimeError(f"Remote path exists and is non-empty: {rp}. Set nuke_remote=True to wipe.")
         if probe in ("NONEMPTY", "EMPTY"):
-            self._ssh_exec(ssh_user_host=ssh_host,
-                           cmd=f"rm -rf {rp}")
+            self._ssh_exec(ssh_user_host=ssh_host, cmd=f"rm -rf {rp}")
 
         self._ssh_exec(ssh_user_host=ssh_host,
                        cmd=f"bash -lc 'git init --bare --shared=group {rp} && "
