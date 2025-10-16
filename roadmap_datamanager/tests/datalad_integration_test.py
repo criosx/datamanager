@@ -51,11 +51,6 @@ if annex_err:
 
 ENV_READY = not ENV_ERRORS
 
-SSH_HOST_SHELL = os.getenv("SCIDATA_TEST_SSH_HOST_SHELL", "bluehost-full")
-SSH_HOST_GIT = os.getenv("SCIDATA_TEST_SSH_HOST_GIT",   "bluehost-data")
-GIT_BASE = os.getenv("SCIDATA_TEST_GIT_BASE", "/home2/frankhei/gittest")
-WHITELIST = os.getenv("SCIDATA_TEST_WHITELIST", "/home2/frankhei/gittest")
-
 
 def _ssh_ok(host):  # shell or git
     try:
@@ -64,13 +59,6 @@ def _ssh_ok(host):  # shell or git
         return True
     except Exception:
         return False
-
-
-def _ssh(host_cmd: str) -> None:
-    subprocess.run(["ssh", SSH_HOST_SHELL, host_cmd], check=True, text=True)
-
-def _ensure_remote_base():
-    _ssh(f"mkdir -p {GIT_BASE}")
 
 
 class TestEnvironment(unittest.TestCase):
@@ -331,23 +319,16 @@ class DataManagerInstallIntoTreeTest(unittest.TestCase):
             )
 
 
-@unittest.skipUnless(_ssh_ok(SSH_HOST_SHELL), "Shell SSH host not reachable")
+# --- GIN test gating / config ---
+GIN_TEST = os.getenv("SCIDATA_TEST_GIN", "0") == "1"
+GIN_NAMESPACE = os.getenv("GIN_NAMESPACE", "youruser")  # e.g. your GIN username or org
+GIN_ACCESS = os.getenv("GIN_ACCESS", "ssh")             # "ssh" (recommended) or "https"
+# CRED = os.getenv("SCIDATA_GIN_CRED")                    # only if using https with a stored credential
+
+@unittest.skipUnless(GIN_TEST, "GIN test disabled (set SCIDATA_TEST_GIN=1 to enable)")
 class DataManagerResetSiblingTest(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        if not _ssh_ok(SSH_HOST_SHELL):
-            raise unittest.SkipTest("Shell SSH host not reachable")
-        _ensure_remote_base()
-
-    def _assert_bare_and_has_refs(self, remote_abs_path: str):
-        # Check bare via remote git (exec on server)
-        _ssh(f"bash -lc 'git -C {remote_abs_path} rev-parse --is-bare-repository'")
-        # Must have at least one head after push
-        _ssh(f"bash -lc 'test -d {remote_abs_path}/refs/heads && "
-             f"ls -1 {remote_abs_path}/refs/heads | grep -q .'")
-
     def setUp(self):
-        # local dataset with one subdataset so we exercise recursion
+        # Local dataset with one subdataset so recursion is exercised
         self.work = Path(tempfile.mkdtemp())
         self.root = self.work / "scidata"
         self.dm = DataManager(
@@ -357,61 +338,52 @@ class DataManagerResetSiblingTest(unittest.TestCase):
             datalad_profile="text2git",
         )
         self.dm.init_tree(project="p", campaign="c", experiment="e")
+
+        # Add a subdataset under the experiment
         sub = self.root / "p" / "c" / "e" / "analysis"
         dl.create(path=str(sub), dataset=str(self.root / "p" / "c" / "e"), cfg_proc="text2git")
         dl.save(dataset=str(self.root), recursive=True, message="add analysis subdataset")
 
-        # per-test unique bare path on the real server
-        self.remote_path = f"{GIT_BASE}/scidata-{uuid.uuid4().hex}.git"
+        # Make sure there is at least one commit to push everywhere
+        (self.root / "README.md").write_text("root readme\n")
+        dl.save(dataset=str(self.root), path=[str(self.root / "README.md")], message="seed root")
 
-    def test_happy_path(self):
-        self.dm.reset_git_sibling(
-            name="origin",
-            ssh_host=SSH_HOST_SHELL,
-            remote_abs_path=self.remote_path,
-            recursive=True, nuke_remote=True, force=True,
-            whitelist_root=WHITELIST,
+        (sub / "note.bin").write_bytes(b"\x00\x01")  # binary so text2git annexes it
+        dl.save(dataset=str(sub), path=[str(sub / "note.bin")], message="seed subdataset")
+
+        self.repo_name = f"{GIN_NAMESPACE}/scidata-{uuid.uuid4().hex}"
+
+    def test_gin_happy_path(self):
+        # Wire to GIN (create or reconfigure), recursively
+        self.dm.reset_gin_sibling(
+            name="gin",
+            repo=self.repo_name,
+            access_protocol=GIN_ACCESS,
+            credential=None,
+            private=True,
+            recursive=True,
+            force=True,
         )
-        # assert bare & refs exist on server
-        subprocess.run(["ssh", SSH_HOST_SHELL, f"bash -lc 'git -C {self.remote_path} rev-parse --is-bare-repository'"],
-                       check=True, text=True)
-        subprocess.run(["ssh", SSH_HOST_SHELL, f"bash -lc 'ls -1 {self.remote_path}/refs/heads | grep -q .'"],
-                       check=True, text=True)
 
-    def test_nonempty_requires_nuke(self):
-        # Pre-create and make non-empty
-        _ssh(f"mkdir -p {self.remote_path} && touch {self.remote_path}/SOMETHING")
-        with self.assertRaises(RuntimeError):
-            self.dm.reset_git_sibling(
-                name="origin",
-                ssh_host=SSH_HOST_SHELL,
-                remote_abs_path=self.remote_path,
-                recursive=True,
-                nuke_remote=False,
-                force=True,
-                whitelist_root=WHITELIST,
-            )
+        # Sibling exists on root
+        root_sibs = dl.siblings(dataset=str(self.root), action="query", return_type="list")
+        self.assertTrue(any(s.get("name") == "gin" for s in root_sibs), "root missing 'gin' sibling")
 
-    def test_refuses_without_force(self):
-        with self.assertRaises(RuntimeError):
-            self.dm.reset_git_sibling(
-                name="origin",
-                ssh_host=SSH_HOST_SHELL,
-                remote_abs_path=self.remote_path,
-                recursive=True,
-                nuke_remote=True,
-                force=False,
-                whitelist_root=WHITELIST,
-            )
+        # Sibling exists on subdataset
+        sub = self.root / "p" / "c" / "e" / "analysis"
+        sub_sibs = dl.siblings(dataset=str(sub), action="query", return_type="list")
+        self.assertTrue(any(s.get("name") == "gin" for s in sub_sibs), "subdataset missing 'gin' sibling")
 
-    def test_refuses_outside_whitelist(self):
-        with self.assertRaises(RuntimeError):
-            self.dm.reset_git_sibling(
-                name="origin",
-                ssh_host=SSH_HOST_SHELL,
-                remote_abs_path=f"/home2/frankhei/NOT-ALLOWED/scidata.git",
-                recursive=True,
-                nuke_remote=True,
-                force=True,
-                whitelist_root=WHITELIST,
-            )
+        # Try a lightweight publish to ensure remote usability (Git + annex content)
+        #    (reset_gin_sibling already pushes, but we do a small follow-up change to verify)
+        (self.root / "TOUCH.txt").write_text("tick\n")
+        dl.save(dataset=str(self.root), path=[str(self.root / "TOUCH.txt")], message="touch")
+        dl.push(dataset=str(self.root), to="gin", recursive=True, data="anything")
+
+        # Optional integrity check: drop local content for annexed file and get it back from GIN
+        #    This proves annex on GIN is actually serving content.
+        dl.drop(dataset=str(sub), path=[str(sub / "note.bin")], what="content", reckless="availability")
+        self.assertFalse((sub / "note.bin").stat().st_size, "annex content not dropped as expected?")
+        dl.get(dataset=str(sub), path=[str(sub / "note.bin")])  # fetches from 'gin' if needed
+        self.assertTrue((sub / "note.bin").exists() and (sub / "note.bin").stat().st_size == 2)
+

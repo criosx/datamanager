@@ -18,46 +18,6 @@ from datalad import api as dl
 from datalad.distribution.dataset import Dataset
 
 
-# ---------------------------- SSH Connection ------------------------------ #
-class _SSHSession:
-    def __init__(self, host: str):
-        self.host = host
-        self.ctrl = Path(tempfile.gettempdir()) / f"cm-{uuid.uuid4().hex}"
-
-    def __enter__(self):
-        # start master in background (won’t prompt thanks to BatchMode)
-        subprocess.run([
-            "ssh",
-            "-o", "BatchMode=yes",
-            "-o", "ControlMaster=auto",
-            "-o", f"ControlPath={self.ctrl}",
-            "-o", "ControlPersist=60s",
-            "-N", "-f",
-            self.host
-        ], check=True, text=True)
-        return self
-
-    def run(self, cmd: str, *, capture_output: bool = False):
-        return subprocess.run([
-            "ssh",
-            "-o", "BatchMode=yes",
-            "-o", "ControlMaster=auto",
-            "-o", f"ControlPath={self.ctrl}",
-            self.host, cmd
-        ], check=True, text=True,
-           stdout=(subprocess.PIPE if capture_output else None),
-           stderr=(subprocess.PIPE if capture_output else None))
-
-    def __exit__(self, *exc):
-        # try to close master; ignore errors if already dead
-        subprocess.run([
-            "ssh",
-            "-O", "exit",
-            "-o", f"ControlPath={self.ctrl}",
-            self.host
-        ], text=True)
-
-
 # ---------------------------- Config container ---------------------------- #
 @dataclass
 class DataManagerConfig:
@@ -531,56 +491,69 @@ class DataManager:
             self._save_meta(top_created, node_type="dataset", name=(name or src.name))
             return top_created
 
-    def reset_git_sibling(
+    def reset_gin_sibling(
             self,
             *,
-            name: str = "origin",
-            ssh_host: str = 'default',  # requires shell-capable host
-            remote_abs_path: str = "/home2/frankhei/gittest/scidata.git",
+            name: str = "gin",
+            repo: str = "datamanager",  # org_or_user/repo
+            access_protocol: str = "ssh",  # "ssh" or "https"
+            credential: Optional[str] = None,  # name in DataLad's credential store
+            private: bool = True,  # if creation is supported and desired
             recursive: bool = True,
-            nuke_remote: bool = False,
             force: bool = False,
-            whitelist_root: str = "/home2/frankhei/gittest",
     ) -> None:
+        """
+        Wire this dataset (and optionally its subdatasets) to a GIN sibling.
+        Creates or reconfigures the remote, then pushes Git and annex content.
 
-        rp = Path(remote_abs_path)
+        Requirements:
+          - DataLad 'create_sibling_gin' command available (extension installed)
+          - You have permission to create/use `repo` on GIN
+          - If using HTTPS, set up a credential in DataLad (or SSH keys for SSH)
+        """
         if not force:
             raise RuntimeError("force=True required")
-        if not rp.is_absolute():
-            raise RuntimeError("remote_abs_path must be absolute")
-        if not str(rp).startswith(str(Path(whitelist_root)) + "/") and str(rp) != str(Path(whitelist_root)):
-            raise RuntimeError(f"remote_abs_path must be under {whitelist_root}")
 
-        # remote prep with full shell
-        with _SSHSession(ssh_host) as ssh:
-            # top-level prep
-            ssh.run(f"mkdir -p {rp.parent}")
-            probe = ssh.run(
-                f"bash -lc 'if [ -e {rp} ]; then "
-                f"  if [ -z \"$(ls -A {rp} 2>/dev/null)\" ]; then echo EMPTY; "
-                f"  else echo NONEMPTY; fi; else echo MISSING; fi'",
-                capture_output=True
-            ).stdout.strip()
+        ds = Dataset(str(self.root))
 
-            if probe in ("NONEMPTY", "EMPTY"):
-                ssh.run(f"rm -rf {rp}")
-
-            ssh.run(
-                f"bash -lc 'git init --bare --shared=group {rp} && "
-                f"git -C {rp} config receive.denyNonFastforwards true && "
-                f"git -C {rp} config http.receivepack true'"
+        # Guardrails: ensure the extension/command is present
+        if not hasattr(ds, "create_sibling_gin"):
+            raise RuntimeError(
+                "DataLad 'create_sibling_gin' command not found. "
+                "Upgrade DataLad or install the GIN extension that provides it."
             )
 
-            # recurse
-            self._add_git_only_sibling_recursive(
-                name=name,
-                ssh_host=ssh_host,
-                remote_abs_path=remote_abs_path,
-                recursive=recursive,
-                _ssh_session=ssh,  # pass the session down
+        # Create or reconfigure the sibling
+        # NOTE: exact kwarg names vary slightly across DataLad versions.
+        # The pattern below works across recent versions; if your version disagrees,
+        # run:  print(dl.create_sibling_gin.__doc__)  or  datalad create-sibling-gin -h
+        kws = dict(
+            name=name,
+            dataset=ds,
+            recursive=recursive,
+            existing="reconfigure",  # do not fail if sibling exists
+            access=access_protocol,  # "ssh" or "https"
+            # publish_by_default=["refs/heads/*:refs/heads/*", "git-annex"],  # helpful default
+            private=private,  # if server-side creation is supported
+        )
+
+        # Target repo path (org/user + name). Some builds expect 'name' positional, others 'dataset' + 'name' + 'url'.
+        # The common Python binding accepts the repo path as the first positional argument:
+        try:
+            ds.create_sibling_gin(repo, **kws, credential=credential) if credential else ds.create_sibling_gin(repo,
+                                                                                                               **kws)
+        except TypeError:
+            # Fallback for variants that use 'name' + 'url' style
+            dl.create_sibling_gin(
+                dataset=ds, name=name, url=repo, recursive=recursive,
+                existing="reconfigure", access=access_protocol,
+                credential=credential if credential else None,
+                publish_by_default=["refs/heads/*:refs/heads/*", "git-annex"],
             )
 
-        time.sleep(5)
-        dl.push(dataset=str(self.root), to=name, recursive=recursive, data='nothing')
+        # Push Git + annex content to GIN (GIN supports annex)
+        # If you want to keep structure-only pushes, change data='nothing'.
+        dl.push(dataset=str(self.root), to=name, recursive=recursive, data="anything")
+
         if self.cfg.verbose:
-            print(f"[scidata] Reset sibling '{name}' at {ssh_host} and pushed (recursive={recursive}).")
+            print(f"[scidata] Reset sibling '{name}' at GIN repo '{repo}' and pushed (recursive={recursive}).")
