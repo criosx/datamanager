@@ -59,7 +59,7 @@ WHITELIST = os.getenv("SCIDATA_TEST_WHITELIST", "/home2/frankhei/gittest")
 
 def _ssh_ok(host):  # shell or git
     try:
-        subprocess.run(["ssh","-o","BatchMode=yes","-o","ConnectTimeout=6",host,"exit 0"],
+        subprocess.run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=6", host, "exit 0"],
                        check=True, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         return True
     except Exception:
@@ -339,6 +339,13 @@ class DataManagerResetSiblingTest(unittest.TestCase):
             raise unittest.SkipTest("Shell SSH host not reachable")
         _ensure_remote_base()
 
+    def _assert_bare_and_has_refs(self, remote_abs_path: str):
+        # Check bare via remote git (exec on server)
+        _ssh(f"bash -lc 'git -C {remote_abs_path} rev-parse --is-bare-repository'")
+        # Must have at least one head after push
+        _ssh(f"bash -lc 'test -d {remote_abs_path}/refs/heads && "
+             f"ls -1 {remote_abs_path}/refs/heads | grep -q .'")
+
     def setUp(self):
         # local dataset with one subdataset so we exercise recursion
         self.work = Path(tempfile.mkdtemp())
@@ -356,13 +363,6 @@ class DataManagerResetSiblingTest(unittest.TestCase):
 
         # per-test unique bare path on the real server
         self.remote_path = f"{GIT_BASE}/scidata-{uuid.uuid4().hex}.git"
-
-    def _assert_bare_and_has_refs(self, remote_abs_path: str):
-        # Check bare via remote git (exec on server)
-        _ssh(f"bash -lc 'git -C {remote_abs_path} rev-parse --is-bare-repository'")
-        # Must have at least one head after push
-        _ssh(f"bash -lc 'test -d {remote_abs_path}/refs/heads && "
-             f"ls -1 {remote_abs_path}/refs/heads | grep -q .'")
 
     def test_happy_path(self):
         self.dm.reset_git_sibling(

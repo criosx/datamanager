@@ -4,7 +4,9 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import tempfile
 import time
+import uuid
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -16,8 +18,47 @@ from datalad import api as dl
 from datalad.distribution.dataset import Dataset
 
 
-# ---------------------------- Config container ---------------------------- #
+# ---------------------------- SSH Connection ------------------------------ #
+class _SSHSession:
+    def __init__(self, host: str):
+        self.host = host
+        self.ctrl = Path(tempfile.gettempdir()) / f"cm-{uuid.uuid4().hex}"
 
+    def __enter__(self):
+        # start master in background (won’t prompt thanks to BatchMode)
+        subprocess.run([
+            "ssh",
+            "-o", "BatchMode=yes",
+            "-o", "ControlMaster=auto",
+            "-o", f"ControlPath={self.ctrl}",
+            "-o", "ControlPersist=60s",
+            "-N", "-f",
+            self.host
+        ], check=True, text=True)
+        return self
+
+    def run(self, cmd: str, *, capture_output: bool = False):
+        return subprocess.run([
+            "ssh",
+            "-o", "BatchMode=yes",
+            "-o", "ControlMaster=auto",
+            "-o", f"ControlPath={self.ctrl}",
+            self.host, cmd
+        ], check=True, text=True,
+           stdout=(subprocess.PIPE if capture_output else None),
+           stderr=(subprocess.PIPE if capture_output else None))
+
+    def __exit__(self, *exc):
+        # try to close master; ignore errors if already dead
+        subprocess.run([
+            "ssh",
+            "-O", "exit",
+            "-o", f"ControlPath={self.ctrl}",
+            self.host
+        ], text=True)
+
+
+# ---------------------------- Config container ---------------------------- #
 @dataclass
 class DataManagerConfig:
     # Required identity
@@ -108,25 +149,22 @@ class DataManager:
                       f"campaign={self.cfg.default_campaign}")
             print(f"[DataManager] profile={self.cfg.datalad_profile or '(none)'} ")
 
-    def _add_git_only_sibling_recursive(self, *, name: str, ssh_host: str, remote_abs_path: str, recursive: bool):
-        # Top-level: add sibling via ssh:// URL to the *existing* bare repo
+    def _add_git_only_sibling_recursive(self, *, name: str, ssh_host: str, remote_abs_path: str, recursive: bool,
+                                        _ssh_session=None):
         top_url = f"ssh://{ssh_host}{remote_abs_path}"
-        dl.siblings(action="add", dataset=str(self.root), name=name, url=top_url, result_renderer="disabled")
-
+        dl.siblings(action="add", dataset=str(self.root), name=name, url=top_url, get_annex_info=False,
+                    result_renderer="disabled")
         if not recursive:
             return
 
-        # Sub-bare repos live under <parent>/<stem>/... e.g. /path/scidata.git -> /path/scidata/<rel>.git
         top_bare = Path(remote_abs_path)
-        base_dir = top_bare.parent / top_bare.stem  # e.g. /home2/.../gittest/scidata
+        base_dir = top_bare.parent / top_bare.stem
 
-        # Create sub-bare repos and add siblings for each subdataset
         for sd in dl.subdatasets(dataset=str(self.root), recursive=True, return_type="generator"):
             sd_path = Path(sd["path"])
-            rel = sd_path.relative_to(self.root)  # e.g. p/c/e/analysis
-            sub_bare = base_dir / rel.with_suffix(".git")  # e.g. .../scidata/p/c/e/analysis.git
+            rel = sd_path.relative_to(self.root)
+            sub_bare = base_dir / rel.with_suffix(".git")
 
-            # provision each sub-bare on the server (full shell host)
             cmd = f"""bash -lc '
               set -euo pipefail
               mkdir -p {sub_bare.parent}
@@ -135,10 +173,12 @@ class DataManager:
               git -C {sub_bare} config receive.denyNonFastforwards true
               git -C {sub_bare} config http.receivepack true
             '"""
-            self._ssh_exec(ssh_user_host=ssh_host, cmd=cmd)
+            if _ssh_session is not None:
+                _ssh_session.run(cmd)
+            else:
+                self._ssh_exec(ssh_user_host=ssh_host, cmd=cmd)
 
-            # add the sibling to the local subdataset via ssh:// URL
-            dl.siblings(action="add", dataset=str(sd_path), name=name,
+            dl.siblings(action="add", dataset=str(sd_path), name=name, get_annex_info=False,
                         url=f"ssh://{ssh_host}{sub_bare}", result_renderer="disabled")
 
     def _get_dataset_version(self, ds: Dataset) -> str:
@@ -381,7 +421,6 @@ class DataManager:
                     raise
                 time.sleep(base_sleep * (2 ** i))
 
-
     def _get_dataset_id(self, ds: Dataset) -> str:
         # Prefer DataLad property; fallback to reading .datalad/config via Git if needed
         if getattr(ds, "id", None):
@@ -513,29 +552,35 @@ class DataManager:
             raise RuntimeError(f"remote_abs_path must be under {whitelist_root}")
 
         # remote prep with full shell
-        self._ssh_exec(ssh_user_host=ssh_host, cmd=f"mkdir -p {rp.parent}")
-        probe = self._ssh_exec(ssh_user_host=ssh_host, capture_output=True,
-                               cmd=f"bash -lc 'if [ -e {rp} ]; then "
-                                   f"  if [ -z \"$(ls -A {rp} 2>/dev/null)\" ]; then echo EMPTY; "
-                                   f"  else echo NONEMPTY; fi; else echo MISSING; fi'").stdout.strip()
+        with _SSHSession(ssh_host) as ssh:
+            # top-level prep
+            ssh.run(f"mkdir -p {rp.parent}")
+            probe = ssh.run(
+                f"bash -lc 'if [ -e {rp} ]; then "
+                f"  if [ -z \"$(ls -A {rp} 2>/dev/null)\" ]; then echo EMPTY; "
+                f"  else echo NONEMPTY; fi; else echo MISSING; fi'",
+                capture_output=True
+            ).stdout.strip()
 
-        if probe == "NONEMPTY" and not nuke_remote:
-            raise RuntimeError(f"Remote path exists and is non-empty: {rp}. Set nuke_remote=True to wipe.")
-        if probe in ("NONEMPTY", "EMPTY"):
-            self._ssh_exec(ssh_user_host=ssh_host, cmd=f"rm -rf {rp}")
+            if probe in ("NONEMPTY", "EMPTY"):
+                ssh.run(f"rm -rf {rp}")
 
-        self._ssh_exec(ssh_user_host=ssh_host,
-                       cmd=f"bash -lc 'git init --bare --shared=group {rp} && "
-                           f"git -C {rp} config receive.denyNonFastforwards true && "
-                           f"git -C {rp} config http.receivepack true'")
+            ssh.run(
+                f"bash -lc 'git init --bare --shared=group {rp} && "
+                f"git -C {rp} config receive.denyNonFastforwards true && "
+                f"git -C {rp} config http.receivepack true'"
+            )
 
-        # after you provision the TOP bare repo on the server:
-        self._add_git_only_sibling_recursive(
-            name=name,
-            ssh_host=ssh_host,
-            remote_abs_path=remote_abs_path,
-            recursive=recursive
-        )
-        dl.push(dataset=str(self.root), to=name, recursive=recursive)
+            # recurse
+            self._add_git_only_sibling_recursive(
+                name=name,
+                ssh_host=ssh_host,
+                remote_abs_path=remote_abs_path,
+                recursive=recursive,
+                _ssh_session=ssh,  # pass the session down
+            )
+
+        time.sleep(5)
+        dl.push(dataset=str(self.root), to=name, recursive=recursive, data='nothing')
         if self.cfg.verbose:
             print(f"[scidata] Reset sibling '{name}' at {ssh_host} and pushed (recursive={recursive}).")
