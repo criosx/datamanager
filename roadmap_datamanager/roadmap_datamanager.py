@@ -107,38 +107,6 @@ class DataManager:
                       f"campaign={self.cfg.default_campaign}")
             print(f"[DataManager] profile={self.cfg.datalad_profile or '(none)'} ")
 
-    def _add_git_only_sibling_recursive(self, *, name: str, ssh_host: str, remote_abs_path: str, recursive: bool,
-                                        _ssh_session=None):
-        top_url = f"ssh://{ssh_host}{remote_abs_path}"
-        dl.siblings(action="add", dataset=str(self.root), name=name, url=top_url, get_annex_info=False,
-                    result_renderer="disabled")
-        if not recursive:
-            return
-
-        top_bare = Path(remote_abs_path)
-        base_dir = top_bare.parent / top_bare.stem
-
-        for sd in dl.subdatasets(dataset=str(self.root), recursive=True, return_type="generator"):
-            sd_path = Path(sd["path"])
-            rel = sd_path.relative_to(self.root)
-            sub_bare = base_dir / rel.with_suffix(".git")
-
-            cmd = f"""bash -lc '
-              set -euo pipefail
-              mkdir -p {sub_bare.parent}
-              rm -rf {sub_bare}
-              git init --bare --shared=group {sub_bare}
-              git -C {sub_bare} config receive.denyNonFastforwards true
-              git -C {sub_bare} config http.receivepack true
-            '"""
-            if _ssh_session is not None:
-                _ssh_session.run(cmd)
-            else:
-                self._ssh_exec(ssh_user_host=ssh_host, cmd=cmd)
-
-            dl.siblings(action="add", dataset=str(sd_path), name=name, get_annex_info=False,
-                        url=f"ssh://{ssh_host}{sub_bare}", result_renderer="disabled")
-
     def _get_dataset_version(self, ds: Dataset) -> str:
         try:
             return ds.repo.get_hexsha()
@@ -307,7 +275,13 @@ class DataManager:
         return ep, cat, target
 
     def _save_meta(self, ds_path: Path, *, node_type: str, name: str) -> None:
-        """Attach JSON-LD at dataset level using MetaLad (CLI)."""
+        """
+        Attach JSON-LD at dataset level using MetaLad (CLI).
+        :param ds_path: Path to the dataset
+        :param node_type: Node type of dataset
+        :param name: name that identifies the file or dataset for which the metadata was extracted
+        :return: None
+        """
 
         ds = Dataset(str(ds_path))
         if not ds.is_installed():
@@ -345,35 +319,6 @@ class DataManager:
 
         # Commit metadata in this dataset (even if not yet registered by parent)
         dl.save(dataset=str(ds_path), message=f"scidata: metadata for {node_type}={name}")
-
-    @staticmethod
-    def _ssh_exec(*, ssh_user_host: str, cmd: str, capture_output: bool = False,
-                  attempts: int = 3, base_sleep: float = 0.4):
-        """
-        Run a remote shell command with mild retry/backoff and sensible SSH options.
-        """
-        ssh_cmd = [
-            "ssh",
-            "-o", "BatchMode=yes",
-            "-o", "ConnectTimeout=8",
-            "-o", "ConnectionAttempts=2",
-            ssh_user_host,
-            cmd,
-        ]
-        last_exc = None
-        for i in range(attempts):
-            try:
-                return subprocess.run(
-                    ssh_cmd,
-                    check=True, text=True,
-                    stdout=(subprocess.PIPE if capture_output else None),
-                    stderr=(subprocess.PIPE if capture_output else None),
-                )
-            except subprocess.CalledProcessError as e:
-                last_exc = e
-                if i == attempts - 1:
-                    raise
-                time.sleep(base_sleep * (2 ** i))
 
     def _get_dataset_id(self, ds: Dataset) -> str:
         # Prefer DataLad property; fallback to reading .datalad/config via Git if needed
