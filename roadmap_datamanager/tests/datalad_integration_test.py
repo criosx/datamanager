@@ -320,10 +320,10 @@ class DataManagerInstallIntoTreeTest(unittest.TestCase):
 
 
 # --- GIN test gating / config ---
-GIN_TEST = os.getenv("SCIDATA_TEST_GIN", "0") == "1"
-GIN_NAMESPACE = os.getenv("GIN_NAMESPACE", "youruser")  # e.g. your GIN username or org
-GIN_ACCESS = os.getenv("GIN_ACCESS", "ssh")             # "ssh" (recommended) or "https"
-# CRED = os.getenv("SCIDATA_GIN_CRED")                    # only if using https with a stored credential
+GIN_TEST = os.getenv("SCIDATA_TEST_GIN", "1") == "1"
+GIN_NAMESPACE = os.getenv("GIN_NAMESPACE", "fhein")  # e.g. your GIN username or org
+GIN_ACCESS = os.getenv("GIN_ACCESS", "https-ssh")    # "ssh" (recommended) or "https"
+# CRED = os.getenv("SCIDATA_GIN_CRED")               # only if using https with a stored credential
 
 @unittest.skipUnless(GIN_TEST, "GIN test disabled (set SCIDATA_TEST_GIN=1 to enable)")
 class DataManagerResetSiblingTest(unittest.TestCase):
@@ -334,33 +334,32 @@ class DataManagerResetSiblingTest(unittest.TestCase):
         self.dm = DataManager(
             self.root,
             user_name="Frank Heinrich",
-            user_email="fheinrich@cmu.edu",
-            datalad_profile="text2git",
+            user_email="fheinrich@cmu.edu"
         )
         self.dm.init_tree(project="p", campaign="c", experiment="e")
 
         # Add a subdataset under the experiment
         sub = self.root / "p" / "c" / "e" / "analysis"
-        dl.create(path=str(sub), dataset=str(self.root / "p" / "c" / "e"), cfg_proc="text2git")
+        dl.create(path=str(sub), dataset=str(self.root / "p" / "c" / "e"))
         dl.save(dataset=str(self.root), recursive=True, message="add analysis subdataset")
 
         # Make sure there is at least one commit to push everywhere
         (self.root / "README.md").write_text("root readme\n")
         dl.save(dataset=str(self.root), path=[str(self.root / "README.md")], message="seed root")
 
-        (sub / "note.bin").write_bytes(b"\x00\x01")  # binary so text2git annexes it
+        (sub / "note.bin").write_bytes(b"\x00\x01")
         dl.save(dataset=str(sub), path=[str(sub / "note.bin")], message="seed subdataset")
 
-        self.repo_name = f"{GIN_NAMESPACE}/scidata-{uuid.uuid4().hex}"
+        self.repo_name = f"scidata-{uuid.uuid4().hex}"
 
     def test_gin_happy_path(self):
         # Wire to GIN (create or reconfigure), recursively
-        self.dm.reset_gin_sibling(
-            name="gin",
-            repo=self.repo_name,
+        self.dm.publish_gin_sibling(
+            sibling_name="gin",
+            repo_name=self.repo_name,
             access_protocol=GIN_ACCESS,
             credential=None,
-            private=True,
+            private=False,
             recursive=True,
             force=True,
         )
@@ -375,15 +374,15 @@ class DataManagerResetSiblingTest(unittest.TestCase):
         self.assertTrue(any(s.get("name") == "gin" for s in sub_sibs), "subdataset missing 'gin' sibling")
 
         # Try a lightweight publish to ensure remote usability (Git + annex content)
-        #    (reset_gin_sibling already pushes, but we do a small follow-up change to verify)
+        #    (publish_gin_sibling already pushes, but we do a small follow-up change to verify)
         (self.root / "TOUCH.txt").write_text("tick\n")
-        dl.save(dataset=str(self.root), path=[str(self.root / "TOUCH.txt")], message="touch")
+        dl.save(dataset=str(self.root), path=[str(self.root / "TOUCH.txt")], recursive=True, message="touch")
         dl.push(dataset=str(self.root), to="gin", recursive=True, data="anything")
 
         # Optional integrity check: drop local content for annexed file and get it back from GIN
         #    This proves annex on GIN is actually serving content.
-        dl.drop(dataset=str(sub), path=[str(sub / "note.bin")], what="content", reckless="availability")
-        self.assertFalse((sub / "note.bin").stat().st_size, "annex content not dropped as expected?")
+        dl.drop(dataset=str(sub), path=[str(sub / "note.bin")], what="filecontent", reckless="availability")
+        self.assertFalse(dl.Dataset(str(sub)).repo.file_has_content("note.bin"))
         dl.get(dataset=str(sub), path=[str(sub / "note.bin")])  # fetches from 'gin' if needed
         self.assertTrue((sub / "note.bin").exists() and (sub / "note.bin").stat().st_size == 2)
 

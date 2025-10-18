@@ -4,9 +4,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
-import tempfile
 import time
-import uuid
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -35,7 +33,7 @@ class DataManagerConfig:
     default_campaign: Optional[str] = None
 
     # DataLad behavior
-    datalad_profile: Optional[str] = "text2git"  # None to disable profile on create
+    datalad_profile: Optional[str] = None
 
     # MetaLad envelope defaults
     extractor_name: str = "scidata_node_v1"
@@ -184,13 +182,23 @@ class DataManager:
         """
         If dataset at `path` exists, (optionally) ensure it's registered in `superds`.
         Otherwise, create it (registered when superds is given).
+        :param path: Path pointing to the dataset.
+        :param node_type: Node type (user, project, category, experiment).
+        :param name: Name of the dataset.
+        :param superds: Path pointing to the parent dataset.
+        :return: None
         """
         path = Path(path).resolve()
         ds = Dataset(str(path))
 
         if ds.is_installed():
             if superds and self.cfg.register_existing:
-                self._register_existing(Dataset(str(superds)), ds)
+                # If already registered, this is a no-op (status=notneeded)
+                dl.save(
+                    dataset=str(superds),
+                    path=[str(path)],
+                    message=f"Register existing subdataset {path} with parent dataset {str(superds)})"
+                )
             return
 
         # Create (and register if superds is provided)
@@ -266,20 +274,6 @@ class DataManager:
         dl.save(dataset=str(cat_or_target_ds_path), recursive=True,
                 message=f"Register imported folder {top_name} as dataset hierarchy")
         return top_path
-
-    def _register_existing(self, superds: Dataset, child: Dataset) -> None:
-        """Register an already-instantiated child dataset in its superdataset."""
-        # ensure child is actually inside superds
-        self._ensure_is_subpath(Path(child.pathobj), Path(superds.pathobj))
-
-        # If already registered, this is a no-op (status=notneeded)
-        # TODO: That might not be true -> check.
-        dl.subdatasets(dataset=str(superds.path),
-                       path=[str(Path(child.path).relative_to(superds.path))],
-                       on_failure="ignore",
-                       return_type="list")
-        dl.save(dataset=str(superds.path),
-                message=f"Register existing subdataset {os.path.relpath(child.path, superds.path)}")
 
     def _resolve_existing_target_below_category(self, *, project: Optional[str], campaign: Optional[str],
                                                 experiment: str, category: str, dest_rel: Path) -> (
@@ -491,69 +485,46 @@ class DataManager:
             self._save_meta(top_created, node_type="dataset", name=(name or src.name))
             return top_created
 
-    def reset_gin_sibling(
+    def publish_gin_sibling(
             self,
             *,
-            name: str = "gin",
-            repo: str = "datamanager",  # org_or_user/repo
-            access_protocol: str = "ssh",  # "ssh" or "https"
-            credential: Optional[str] = None,  # name in DataLad's credential store
-            private: bool = True,  # if creation is supported and desired
+            sibling_name: str = "gin",
+            repo_name: str = "datamanager",
+            dataset=None,
+            access_protocol: str = "https-ssh",
+            credential: Optional[str] = None,
+            private: bool = True,
             recursive: bool = True,
             force: bool = False,
     ) -> None:
-        """
-        Wire this dataset (and optionally its subdatasets) to a GIN sibling.
-        Creates or reconfigures the remote, then pushes Git and annex content.
 
-        Requirements:
-          - DataLad 'create_sibling_gin' command available (extension installed)
-          - You have permission to create/use `repo` on GIN
-          - If using HTTPS, set up a credential in DataLad (or SSH keys for SSH)
-        """
         if not force:
             raise RuntimeError("force=True required")
 
-        ds = Dataset(str(self.root))
+        if dataset is None:
+            dataset = str(self.root)
+        ds = Dataset(str(dataset))
 
-        # Guardrails: ensure the extension/command is present
-        if not hasattr(ds, "create_sibling_gin"):
-            raise RuntimeError(
-                "DataLad 'create_sibling_gin' command not found. "
-                "Upgrade DataLad or install the GIN extension that provides it."
-            )
+        # make sure all changes are saved before publishing to GIN
+        if recursive:
+            ds.save(recursive=True, message='Recursive save for GIN publishing')
 
-        # Create or reconfigure the sibling
-        # NOTE: exact kwarg names vary slightly across DataLad versions.
-        # The pattern below works across recent versions; if your version disagrees,
-        # run:  print(dl.create_sibling_gin.__doc__)  or  datalad create-sibling-gin -h
-        kws = dict(
-            name=name,
-            dataset=ds,
+        # Create/reconfigure GIN sibling WITH content hosting
+        ds.create_sibling_gin(
+            repo_name,
+            name=sibling_name,
             recursive=recursive,
-            existing="reconfigure",  # do not fail if sibling exists
-            access=access_protocol,  # "ssh" or "https"
-            # publish_by_default=["refs/heads/*:refs/heads/*", "git-annex"],  # helpful default
-            private=private,  # if server-side creation is supported
+            existing="skip",
+            access_protocol=access_protocol,
+            credential=credential,
+            private=private
         )
 
-        # Target repo path (org/user + name). Some builds expect 'name' positional, others 'dataset' + 'name' + 'url'.
-        # The common Python binding accepts the repo path as the first positional argument:
-        try:
-            ds.create_sibling_gin(repo, **kws, credential=credential) if credential else ds.create_sibling_gin(repo,
-                                                                                                               **kws)
-        except TypeError:
-            # Fallback for variants that use 'name' + 'url' style
-            dl.create_sibling_gin(
-                dataset=ds, name=name, url=repo, recursive=recursive,
-                existing="reconfigure", access=access_protocol,
-                credential=credential if credential else None,
-                publish_by_default=["refs/heads/*:refs/heads/*", "git-annex"],
-            )
-
-        # Push Git + annex content to GIN (GIN supports annex)
-        # If you want to keep structure-only pushes, change data='nothing'.
-        dl.push(dataset=str(self.root), to=name, recursive=recursive, data="anything")
+        ds.push(to=sibling_name, recursive=recursive, data='auto')
 
         if self.cfg.verbose:
-            print(f"[scidata] Reset sibling '{name}' at GIN repo '{repo}' and pushed (recursive={recursive}).")
+            print(
+                f"[Datamanager] Reset sibling '{sibling_name}' at GIN repo '{repo_name}' and pushed "
+                f"(recursive={recursive})."
+            )
+
