@@ -274,7 +274,14 @@ class DataManager:
 
         return ep, cat, target
 
-    def _save_meta(self, ds_path: Path, *, node_type: str, name: str) -> None:
+    def _save_meta(
+            self,
+            ds_path: Path,
+            *,
+            node_type: str,
+            name: str,
+            extra: Optional[Dict[str, Any]] = None
+    ) -> None:
         """
         Attach JSON-LD at dataset level using MetaLad (CLI).
         :param ds_path: Path to the dataset
@@ -282,6 +289,8 @@ class DataManager:
         :param name: name that identifies the file or dataset for which the metadata was extracted
         :return: None
         """
+        # TODO: This is all very preliminary. Some of the datafields are placeholders. Not sure how
+        #    adding metadata from multiple files here at the dataset level will work out. Not tested.
 
         ds = Dataset(str(ds_path))
         if not ds.is_installed():
@@ -290,6 +299,14 @@ class DataManager:
         dataset_id = self._get_dataset_id(ds)
         dataset_version = self._get_dataset_version(ds)
         extraction_time = self.cfg.now_fn().replace(microsecond=0).isoformat()
+        extracted = {
+            "@context": {"@vocab": "http://schema.org/", "scidata": "https://example.org/scidata#"},
+            "@type": "Dataset",
+            "name": name,
+            "scidata:nodeType": node_type,
+        }
+        if extra:
+            extracted.update(extra)
 
         payload = {
             "type": "dataset",
@@ -301,12 +318,7 @@ class DataManager:
             "agent_email": self.cfg.user_email,
             "dataset_id": dataset_id,
             "dataset_version": dataset_version,
-            "extracted_metadata": {
-                "@context": {"@vocab": "http://schema.org/", "scidata": "https://example.org/scidata#"},
-                "@type": "Dataset",
-                "name": name,
-                "scidata:nodeType": node_type,
-            },
+            "extracted_metadata": extracted
         }
 
         p = subprocess.Popen(
@@ -407,15 +419,12 @@ class DataManager:
             if src.is_file():
                 out = self._install_file_into_dataset(src, target_ds_path, move=move)
                 # dataset-level metadata at the *target* dataset
-                self._save_meta(
-                    target_ds_path,
-                    node_type="dataset",
-                    name=f"{target_ds_path.name} ({out.name})",
-                )
+                self._save_meta(target_ds_path, node_type="dataset", name=f"{target_ds_path.name} ({out.name})",
+                                extra=metadata)
                 return target_ds_path
             else:
                 top_created = self._install_folder_as_datasets(src, target_ds_path, name=name, move=move)
-                self._save_meta(top_created, node_type="dataset", name=(name or src.name))
+                self._save_meta(top_created, node_type="dataset", name=(name or src.name), extra=metadata)
                 return top_created
 
         # No dest_rel: fall back to the category root (ensure tree exists/created)
@@ -423,11 +432,11 @@ class DataManager:
         if src.is_file():
             out = self._install_file_into_dataset(src, cat_ds_path, move=move)
             # metadata at category level for single-file install
-            self._save_meta(cat_ds_path, node_type="category", name=f"{category} ({out.name})")
+            self._save_meta(cat_ds_path, node_type="category", name=f"{category} ({out.name})", extra=metadata)
             return cat_ds_path
         else:
             top_created = self._install_folder_as_datasets(src, cat_ds_path, name=name, move=move)
-            self._save_meta(top_created, node_type="dataset", name=(name or src.name))
+            self._save_meta(top_created, node_type="dataset", name=(name or src.name), extra=metadata)
             return top_created
 
     def publish_gin_sibling(
@@ -454,7 +463,7 @@ class DataManager:
         if recursive:
             ds.save(recursive=True, message='Recursive save for GIN publishing')
 
-        # Create/reconfigure GIN sibling WITH content hosting
+        # Create/reconfigure GIN sibling with content hosting
         ds.create_sibling_gin(
             repo_name,
             name=sibling_name,
