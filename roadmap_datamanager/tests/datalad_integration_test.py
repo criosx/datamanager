@@ -361,7 +361,6 @@ class DataManagerResetSiblingTest(unittest.TestCase):
             credential=None,
             private=False,
             recursive=True,
-            force=True,
         )
 
         # Sibling exists on root

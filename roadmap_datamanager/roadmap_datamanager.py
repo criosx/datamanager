@@ -3,8 +3,8 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
-import time
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -110,9 +110,10 @@ class DataManager:
     def _get_dataset_version(self, ds: Dataset) -> str:
         try:
             return ds.repo.get_hexsha()
-        except Exception:
-            # Ensure there is at least one commit to reference
-            dl.save(dataset=str(ds.path), message="Initial commit (auto)")
+        except:
+            # ensure at least one commit by touching .gitignore and saving
+            (Path(ds.path) / ".gitignore").touch(exist_ok=True)
+            dl.save(dataset=str(ds.path), path=[str(Path(ds.path) / ".gitignore")], message="Initial commit (auto)")
             return ds.repo.get_hexsha()
 
     def _proc_env(self) -> Dict[str, str]:
@@ -198,20 +199,27 @@ class DataManager:
         dst = ds_path / src.name
         dst.parent.mkdir(parents=True, exist_ok=True)
         if move:
-            __import__("shutil").move(str(src), str(dst))
+            shutil.move(str(src), str(dst))
         else:
-            __import__("shutil").copy2(str(src), str(dst))
+            shutil.copy2(str(src), str(dst))
 
         dl.save(dataset=str(ds_path), path=[str(dst)], message=f"Add file {dst.name}")
         return dst
 
     def _install_folder_as_datasets(self, src_dir: Path, cat_or_target_ds_path: Path, *, name: Optional[str],
-                                     move: bool) -> Path:
+                                    move: bool = False) -> Path:
         """
         Recursively create a dataset hierarchy mirroring src_dir under cat_or_target_ds_path.
         Each directory becomes a subdataset; files go into their directory’s dataset.
         Returns the path of the top dataset created for the folder.
+
+        :param src_dir: (Path) Path to the source dataset.
+        :param cat_or_target_ds_path: (Path) Path to the (future) parent target dataset.
+        :param name: (str) optional name of the dataset if different from the src_dir name
+        :param move: (bool) move (True) or copy (False) the dataset (default).
+        :return: (Path) Path to the top dataset created for the folder.
         """
+
         top_name = name or src_dir.name
         top_path = cat_or_target_ds_path / top_name
 
@@ -230,9 +238,9 @@ class DataManager:
                     d = parent_ds_path / fn
                     d.parent.mkdir(parents=True, exist_ok=True)
                     if move:
-                        __import__("shutil").move(str(s), str(d))
+                        shutil.move(str(s), str(d))
                     else:
-                        __import__("shutil").copy2(str(s), str(d))
+                        shutil.copy2(str(s), str(d))
                 dl.save(dataset=str(parent_ds_path), message=f"Add files in {rel or top_name}")
 
             for dname in list(dirs):
@@ -400,7 +408,7 @@ class DataManager:
         :param name: (str) name under which the file or folder will be installed.
         :param move: (bool) move or copy file or folder
         :param metadata: (json) additional metadata to add to file or folder (dataset).
-        :return: path to destination
+        :return: path to destination of file or dataset
         """
 
         src = Path(source).expanduser().resolve()
@@ -421,7 +429,7 @@ class DataManager:
                 # dataset-level metadata at the *target* dataset
                 self._save_meta(target_ds_path, node_type="dataset", name=f"{target_ds_path.name} ({out.name})",
                                 extra=metadata)
-                return target_ds_path
+                return out
             else:
                 top_created = self._install_folder_as_datasets(src, target_ds_path, name=name, move=move)
                 self._save_meta(top_created, node_type="dataset", name=(name or src.name), extra=metadata)
@@ -433,27 +441,26 @@ class DataManager:
             out = self._install_file_into_dataset(src, cat_ds_path, move=move)
             # metadata at category level for single-file install
             self._save_meta(cat_ds_path, node_type="category", name=f"{category} ({out.name})", extra=metadata)
-            return cat_ds_path
+            return out
         else:
             top_created = self._install_folder_as_datasets(src, cat_ds_path, name=name, move=move)
             self._save_meta(top_created, node_type="dataset", name=(name or src.name), extra=metadata)
             return top_created
 
-    def publish_gin_sibling(
-            self,
-            *,
-            sibling_name: str = "gin",
-            repo_name: str = "datamanager",
-            dataset=None,
-            access_protocol: str = "https-ssh",
-            credential: Optional[str] = None,
-            private: bool = True,
-            recursive: bool = True,
-            force: bool = False,
-    ) -> None:
-
-        if not force:
-            raise RuntimeError("force=True required")
+    def publish_gin_sibling(self, *, sibling_name: str = "gin", repo_name: str = "datamanager", dataset=None,
+                            access_protocol: str = "https-ssh", credential: Optional[str] = None, private: bool = False,
+                            recursive: bool = False) -> None:
+        """
+        Pushes a gin sibling dataset to {repo_name}.
+        :param sibling_name: sibling name to publish
+        :param repo_name: name of the GIN repository
+        :param dataset: (str or Path) path to dataset to be published, default: root
+        :param access_protocol: (str) access protocol for GIN, default "https-ssh'
+        :param credential: (str) credential to be used for GIN, default None
+        :param private: (bool) privacy of the published dataset, default False
+        :param recursive: (bool) whether to step recursivly into nested subdatasets, default False
+        :return: no return value
+        """
 
         if dataset is None:
             dataset = str(self.root)
