@@ -57,7 +57,7 @@ def _ssh_ok(host):  # shell or git
         subprocess.run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=6", host, "exit 0"],
                        check=True, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         return True
-    except Exception:
+    except (subprocess.CalledProcessError, FileNotFoundError, OSError):
         return False
 
 
@@ -141,7 +141,7 @@ class DataManagerInstallIntoTreeTest(unittest.TestCase):
             obj = json.loads(line)
             if (
                 obj.get("extractor_name") == "scidata_node_v1"
-                and obj.get("extracted_metadata", {}).get("scidata:nodeType") == node_type
+                and obj.get("extracted_metadata", {}).get("datamanager:nodeType") == node_type
                 and obj.get("extracted_metadata", {}).get("name") == name
             ):
                 return True
@@ -187,11 +187,11 @@ class DataManagerInstallIntoTreeTest(unittest.TestCase):
         self.assertTrue((cat / "sample_raw.dat").exists(), "file not copied into category dataset")
         self.assertFalse((ep / "sample_raw.dat").exists(), "file must not be placed under experiment root")
 
-        # Category is a dataset
-        self.assertTrue((cat / ".datalad").exists(), "category is expected to be a dataset")
+        # Category is a dataset (not anymore)
+        # self.assertTrue((cat / ".datalad").exists(), "category is expected to be a dataset")
 
-        # Metadata written at category level, including filename in the name field
-        self.assertTrue(self._has_meta(cat, node_type="category", name="raw (sample_raw.dat)"))
+        # Metadata written at experiment level, including filename in the name field
+        self.assertTrue(self._has_meta(ep, node_type="experiment", name="NR1_0 (sample_raw.dat)"))
 
     def test_install_folder_recursively_as_subdatasets(self):
         root_dir = tempfile.mkdtemp()
@@ -223,24 +223,24 @@ class DataManagerInstallIntoTreeTest(unittest.TestCase):
             campaign="2025_summer",
             experiment="NR1_0",
             category="analysis",
-            name="bundleA",
+            rename="bundleA",
         )
 
         top = cat / "bundleA"
         subA = top / "subA"
         deep = top / "subB" / "deep"
 
-        # Each directory replicated as a dataset (subdatasets)
-        self.assertTrue((top / ".datalad").exists(), "top folder should be a dataset")
-        self.assertTrue((subA / ".datalad").exists(), "subA should be a dataset")
-        self.assertTrue((deep / ".datalad").exists(), "deep should be a dataset")
+        # Each directory replicated as a dataset (subdatasets) (not anymore)
+        # self.assertTrue((top / ".datalad").exists(), "top folder should be a dataset")
+        # self.assertTrue((subA / ".datalad").exists(), "subA should be a dataset")
+        # self.assertTrue((deep / ".datalad").exists(), "deep should be a dataset")
 
         # Files copied into their respective datasets
         self.assertTrue((subA / "a.txt").exists())
         self.assertTrue((deep / "b.txt").exists())
 
         # Metadata created on the top dataset for the folder
-        self.assertTrue(self._has_meta(top, node_type="dataset", name="bundleA"))
+        self.assertTrue(self._has_meta(ep, node_type="experiment", name="bundleA"))
 
     def test_install_into_existing_subdataset_with_dest_rel_file(self):
         root_dir = tempfile.mkdtemp()
@@ -268,11 +268,9 @@ class DataManagerInstallIntoTreeTest(unittest.TestCase):
             category="analysis",
         )
 
-        # Create an existing subdataset at dest_rel ("run_001")
+        # Subfolder at dest_rel ("run_001")
         target = cat / "run_001"
-        dl.create(path=str(target), dataset=str(cat), cfg_proc="text2git")
-        # Save registration in category superdataset
-        dl.save(dataset=str(cat), message="register run_001 subdataset")
+        target.mkdir()
 
         # Now install a file into that existing subdataset
         src = self._mk_temp_file(root, "result.csv", "x,y\n1,2\n")
@@ -282,14 +280,14 @@ class DataManagerInstallIntoTreeTest(unittest.TestCase):
             campaign="2025_summer",
             experiment="NR1_0",
             category="analysis",
-            dest_rel="run_001",   # <- must already exist
+            dest_rel="run_001",  # <- the subfolder
         )
 
         # Assert: file is in the target subdataset
         self.assertTrue((target / "result.csv").exists(), "file not placed into the dest_rel dataset")
 
         # Metadata added to the target dataset, includes filename
-        self.assertTrue(self._has_meta(target, node_type="dataset", name="run_001 (result.csv)"))
+        self.assertTrue(self._has_meta(ep, node_type="dataset", name="run_001 (result.csv)"))
 
     def test_install_into_missing_target_raises(self):
         root_dir = tempfile.mkdtemp()
@@ -307,16 +305,17 @@ class DataManagerInstallIntoTreeTest(unittest.TestCase):
         # Build a source file at root
         src = self._mk_temp_file(root, "x.bin", "data")
 
-        # Expect: dest_rel points to a non-existent dataset -> RuntimeError
-        with self.assertRaises(RuntimeError):
-            dm.install_into_tree(
-                source=src,
-                project="roadmap",
-                campaign="2025_summer",
-                experiment="NR1_0",
-                category="analysis",
-                dest_rel="missing_ds",   # <-- not created: should error by design
-            )
+        # Expect: dest_rel points to a non-existent dataset -> Should be created
+        dm.install_into_tree(
+            source=src,
+            project="roadmap",
+            campaign="2025_summer",
+            experiment="NR1_0",
+            category="analysis",
+            dest_rel="missing_ds",   # <-- not created: should error by design
+        )
+        self.assertTrue((root / "roadmap" / "2025_summer" / "NR1_0" / "x.bin").exists(),
+                        "file not placed into the dest_rel dataset")
 
 
 # --- GIN test gating / config ---
@@ -324,6 +323,7 @@ GIN_TEST = os.getenv("SCIDATA_TEST_GIN", "1") == "1"
 GIN_NAMESPACE = os.getenv("GIN_NAMESPACE", "fhein")  # e.g. your GIN username or org
 GIN_ACCESS = os.getenv("GIN_ACCESS", "https-ssh")    # "ssh" (recommended) or "https"
 # CRED = os.getenv("SCIDATA_GIN_CRED")               # only if using https with a stored credential
+
 
 @unittest.skipUnless(GIN_TEST, "GIN test disabled (set SCIDATA_TEST_GIN=1 to enable)")
 class DataManagerResetSiblingTest(unittest.TestCase):
@@ -384,4 +384,3 @@ class DataManagerResetSiblingTest(unittest.TestCase):
         self.assertFalse(dl.Dataset(str(sub)).repo.file_has_content("note.bin"))
         dl.get(dataset=str(sub), path=[str(sub / "note.bin")])  # fetches from 'gin' if needed
         self.assertTrue((sub / "note.bin").exists() and (sub / "note.bin").stat().st_size == 2)
-

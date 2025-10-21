@@ -7,6 +7,7 @@ import shutil
 import subprocess
 
 from dataclasses import dataclass, field
+from datalad.support.exceptions import IncompleteResultsError
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Dict, Any, Callable, Tuple
@@ -110,7 +111,7 @@ class DataManager:
     def _get_dataset_version(self, ds: Dataset) -> str:
         try:
             return ds.repo.get_hexsha()
-        except:
+        except IncompleteResultsError:
             # ensure at least one commit by touching .gitignore and saving
             (Path(ds.path) / ".gitignore").touch(exist_ok=True)
             dl.save(dataset=str(ds.path), path=[str(Path(ds.path) / ".gitignore")], message="Initial commit (auto)")
@@ -122,30 +123,6 @@ class DataManager:
         # Example: enforce non-interactive Git
         env.setdefault("GIT_TERMINAL_PROMPT", "0")
         return env
-
-    def _ensure_experiment_category(
-        self, project: Optional[str], campaign: Optional[str], experiment: str, category: str
-    ) -> Tuple[Path, Path]:
-        """
-        Ensure experiment dataset exists and a category dataset directly under it.
-        Returns (experiment_path, category_dataset_path).
-        """
-        up = self.root
-        pp = up / project if project else None
-        cp = pp / campaign if (pp and campaign) else None
-        ep = cp / experiment if (cp and experiment) else None
-        if ep is None:
-            raise ValueError("experiment requires project and campaign to be set")
-
-        # Make sure these are datasets and registered
-        self._ensure_dataset(up, superds=None, node_type="user", name=self.cfg.user_name)
-        if pp: self._ensure_dataset(pp, superds=up, node_type="project", name=pp.name)
-        if cp: self._ensure_dataset(cp, superds=pp, node_type="campaign", name=cp.name)
-        self._ensure_dataset(ep, superds=cp, node_type="experiment", name=ep.name)
-
-        cat = ep / category
-        self._ensure_dataset(cat, superds=ep, node_type="category", name=category)
-        return ep, cat
 
     def _ensure_dataset(self, path: Path, node_type, name, superds: Optional[Path]) -> None:
         """
@@ -179,117 +156,7 @@ class DataManager:
             dl.create(path=str(path), dataset=str(superds), cfg_proc=self.cfg.datalad_profile)
         self._save_meta(path, node_type=node_type, name=name)
 
-    @staticmethod
-    def _ensure_is_subpath(child: Path, parent: Path) -> None:
-        child = child.resolve()
-        parent = parent.resolve()
-        try:
-            child.relative_to(parent)
-        except ValueError:
-            raise RuntimeError(f"{child} is not inside super dataset {parent}")
-
-    def _install_file_into_dataset(self, src: Path, ds_path: Path, *, move: bool) -> Path:
-        """
-        Place a single file into the given dataset and save it.
-        """
-        ds = Dataset(str(ds_path))
-        if not ds.is_installed():
-            raise RuntimeError(f"target dataset not installed at {ds_path}")
-
-        dst = ds_path / src.name
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        if move:
-            shutil.move(str(src), str(dst))
-        else:
-            shutil.copy2(str(src), str(dst))
-
-        dl.save(dataset=str(ds_path), path=[str(dst)], message=f"Add file {dst.name}")
-        return dst
-
-    def _install_folder_as_datasets(self, src_dir: Path, cat_or_target_ds_path: Path, *, name: Optional[str],
-                                    move: bool = False) -> Path:
-        """
-        Recursively create a dataset hierarchy mirroring src_dir under cat_or_target_ds_path.
-        Each directory becomes a subdataset; files go into their directory’s dataset.
-        Returns the path of the top dataset created for the folder.
-
-        :param src_dir: (Path) Path to the source dataset.
-        :param cat_or_target_ds_path: (Path) Path to the (future) parent target dataset.
-        :param name: (str) optional name of the dataset if different from the src_dir name
-        :param move: (bool) move (True) or copy (False) the dataset (default).
-        :return: (Path) Path to the top dataset created for the folder.
-        """
-
-        top_name = name or src_dir.name
-        top_path = cat_or_target_ds_path / top_name
-
-        self._ensure_dataset(top_path, superds=cat_or_target_ds_path, node_type="dataset", name=top_name)
-
-        for root, dirs, files in os.walk(src_dir):
-            rel = Path(root).relative_to(src_dir)
-            parent_ds_path = (top_path / rel).resolve()
-
-            if rel != Path("."):
-                self._ensure_dataset(parent_ds_path, superds=parent_ds_path.parent, node_type="dataset", name=rel.name)
-
-            if files:
-                for fn in files:
-                    s = Path(root) / fn
-                    d = parent_ds_path / fn
-                    d.parent.mkdir(parents=True, exist_ok=True)
-                    if move:
-                        shutil.move(str(s), str(d))
-                    else:
-                        shutil.copy2(str(s), str(d))
-                dl.save(dataset=str(parent_ds_path), message=f"Add files in {rel or top_name}")
-
-            for dname in list(dirs):
-                sub_path = parent_ds_path / dname
-                self._ensure_dataset(sub_path, superds=parent_ds_path, node_type="dataset", name=dname)
-
-        dl.save(dataset=str(cat_or_target_ds_path), recursive=True,
-                message=f"Register imported folder {top_name} as dataset hierarchy")
-        return top_path
-
-    def _resolve_existing_target_below_category(self, *, project: Optional[str], campaign: Optional[str],
-                                                experiment: str, category: str, dest_rel: Path) -> (
-                                                Tuple)[Path, Path, Path]:
-        """
-        Returns (experiment_path, category_ds_path, target_ds_path) and verifies:
-          - experiment, category are *installed* datasets
-          - target_ds_path = category/dest_rel is an *installed* dataset
-        No dataset creation is performed here.
-        """
-        up = self.root
-        pp = up / project if project else None
-        cp = pp / campaign if (pp and campaign) else None
-        ep = cp / experiment if (cp and experiment) else None
-        if ep is None:
-            raise ValueError("experiment requires project and campaign to be set")
-
-        cat = (ep / category).resolve()
-
-        # Only *check* (no creation) for existence/installed state
-        if not Dataset(str(ep)).is_installed():
-            raise RuntimeError(f"experiment dataset not installed at {ep}")
-        if not Dataset(str(cat)).is_installed():
-            raise RuntimeError(f"category dataset not installed at {cat}")
-
-        target = (cat / dest_rel).resolve()
-        self._ensure_is_subpath(target, cat)
-        if not Dataset(str(target)).is_installed():
-            raise RuntimeError(f"target dataset not installed at {target} (dest_rel='{dest_rel}')")
-
-        return ep, cat, target
-
-    def _save_meta(
-            self,
-            ds_path: Path,
-            *,
-            node_type: str,
-            name: str,
-            extra: Optional[Dict[str, Any]] = None
-    ) -> None:
+    def _save_meta(self, ds_path: Path, *, node_type: str, name: str, extra: Optional[Dict[str, Any]] = None) -> None:
         """
         Attach JSON-LD at dataset level using MetaLad (CLI).
         :param ds_path: Path to the dataset
@@ -308,10 +175,10 @@ class DataManager:
         dataset_version = self._get_dataset_version(ds)
         extraction_time = self.cfg.now_fn().replace(microsecond=0).isoformat()
         extracted = {
-            "@context": {"@vocab": "http://schema.org/", "scidata": "https://example.org/scidata#"},
+            "@context": {"@vocab": "", "datamanager": ""},
             "@type": "Dataset",
             "name": name,
-            "scidata:nodeType": node_type,
+            "datamanager:nodeType": node_type,
         }
         if extra:
             extracted.update(extra)
@@ -353,14 +220,15 @@ class DataManager:
             return p.stdout.strip()
         raise RuntimeError(f"Could not read dataset id in {ds.path}")
 
-
-    # ----------------------------- Public API ----------------------------- #
-
     def init_tree(self, *, project: Optional[str] = None, campaign: Optional[str] = None,
-                  experiment: Optional[str] = None) -> None:
+                  experiment: Optional[str] = None) -> Path:
         """
-        Ensure the (user)/(project)/(campaign) dataset tree exists and is registered.
+        Ensure the (user)/(project)/(campaign)/(experiment) dataset tree exists and is registered.
         Attach minimal JSON-LD at each level. Idempotent.
+        :param project:
+        :param campaign:
+        :param experiment:
+        :return: (Path) to experiment dataset if argument provided, otherwise None
         """
 
         up = self.root
@@ -383,11 +251,13 @@ class DataManager:
                 message=f"scidata: initialized tree for {self.cfg.user_name}/{project or ''}/{campaign or ''}")
         if self.cfg.verbose:
             print(f"[scidata] initialized/verified tree at {up} for "
-                  f"{self.cfg.user_name}/" + "/".join(x for x in (project, campaign) if x))
+                  f"{self.cfg.user_name}/" + "/".join(x for x in (project, campaign, experiment) if x))
+
+        return ep
 
     def install_into_tree(self, source: os.PathLike | str, *, project: Optional[str], campaign: Optional[str],
                           experiment: str, category: str, dest_rel: Optional[os.PathLike | str] = None,
-                          name: Optional[str] = None, move: bool = False, metadata: Optional[Dict[str, Any]]
+                          rename: Optional[str] = None, move: bool = False, metadata: Optional[Dict[str, Any]]
                           = None) -> Path:
         """
         Install a file or folder into {root}/{project}/{campaign}/{experiment}/{category}
@@ -395,8 +265,7 @@ class DataManager:
 
         Rules:
           - Never install directly under the experiment root but into a predefined category.
-          - For files: add to the chosen dataset and save.
-          - For folders: create subdatasets recursively under the chosen dataset.
+          - For files: add to the chosen category / relative path in dataset and save.
           - Attach dataset-level metadata (includes file/folder name in .name field).
 
         :param source: (str or path) source director of the file or folder to install.
@@ -405,7 +274,7 @@ class DataManager:
         :param experiment: (str) experiment identifier for target destination
         :param category: (str) category for target destination
         :param dest_rel: (str or path) relative path to destination folder from category
-        :param name: (str) name under which the file or folder will be installed.
+        :param rename: (str) name under which the file or folder will be installed.
         :param move: (bool) move or copy file or folder
         :param metadata: (json) additional metadata to add to file or folder (dataset).
         :return: path to destination of file or dataset
@@ -417,45 +286,56 @@ class DataManager:
         if not src.exists():
             raise FileNotFoundError(src)
 
-        # If dest_rel is provided: require that the target dataset already exists.
-        if dest_rel is not None:
-            dest_rel = Path(dest_rel)
-            ep, cat_ds_path, target_ds_path = self._resolve_existing_target_below_category(
-                project=project, campaign=campaign, experiment=experiment, category=category, dest_rel=dest_rel
-            )
-            # Install into target_ds_path (no creation of the target or parents here)
-            if src.is_file():
-                out = self._install_file_into_dataset(src, target_ds_path, move=move)
-                # dataset-level metadata at the *target* dataset
-                self._save_meta(target_ds_path, node_type="dataset", name=f"{target_ds_path.name} ({out.name})",
-                                extra=metadata)
-                return out
-            else:
-                top_created = self._install_folder_as_datasets(src, target_ds_path, name=name, move=move)
-                self._save_meta(top_created, node_type="dataset", name=(name or src.name), extra=metadata)
-                return top_created
+        # make sure the nested dataset structure exists for project/campaign/experiment
+        ep = self.init_tree(project=project, campaign=campaign, experiment=experiment)
 
-        # No dest_rel: fall back to the category root (ensure tree exists/created)
-        ep, cat_ds_path = self._ensure_experiment_category(project, campaign, experiment, category)
-        if src.is_file():
-            out = self._install_file_into_dataset(src, cat_ds_path, move=move)
-            # metadata at category level for single-file install
-            self._save_meta(cat_ds_path, node_type="category", name=f"{category} ({out.name})", extra=metadata)
-            return out
+        # make sure that the category subfolder exists
+        cat_path = ep / category
+        if not cat_path.exists():
+            cat_path.mkdir(parents=True)
+
+        # make sure any relative path from category exists, if given
+        if dest_rel:
+            dest_path = cat_path / dest_rel
+            if not dest_path.exists():
+                dest_path.mkdir(parents=True)
         else:
-            top_created = self._install_folder_as_datasets(src, cat_ds_path, name=name, move=move)
-            self._save_meta(top_created, node_type="dataset", name=(name or src.name), extra=metadata)
-            return top_created
+            dest_path = cat_path
+
+        # add optional renaming to path and check if it exists
+        if rename:
+            dest_path = dest_path / rename
+            if dest_path.exists():
+                raise FileExistsError(dest_path)
+
+        # copy file or folder to destination, register metadata, save dataset
+        if src.is_file():
+            if move:
+                shutil.move(str(src), str(dest_path))
+            else:
+                shutil.copy2(str(src), str(dest_path))
+        elif src.is_dir():
+            if move:
+                shutil.move(str(src), str(dest_path))
+            else:
+                shutil.copytree(str(src), str(dest_path))
+
+        self._save_meta(ep, node_type="experiment", name=f"{ep.name} ({dest_path.name})", extra=metadata)
+        dl.save(dataset=str(ep), recursive=True, message=f"Installed {rename or src.name} in {self.cfg.user_name}/"
+                                                         f"{project or ''}/{campaign or ''}/{experiment or ''}")
+
+        return dest_path
 
     def publish_gin_sibling(self, *, sibling_name: str = "gin", repo_name: str = "datamanager", dataset=None,
                             access_protocol: str = "https-ssh", credential: Optional[str] = None, private: bool = False,
                             recursive: bool = False) -> None:
         """
         Pushes a gin sibling dataset to {repo_name}.
+
         :param sibling_name: sibling name to publish
         :param repo_name: name of the GIN repository
         :param dataset: (str or Path) path to dataset to be published, default: root
-        :param access_protocol: (str) access protocol for GIN, default "https-ssh'
+        :param access_protocol: (str) access protocol for GIN, default "https-ssh"
         :param credential: (str) credential to be used for GIN, default None
         :param private: (bool) privacy of the published dataset, default False
         :param recursive: (bool) whether to step recursivly into nested subdatasets, default False
@@ -488,4 +368,3 @@ class DataManager:
                 f"[Datamanager] Reset sibling '{sibling_name}' at GIN repo '{repo_name}' and pushed "
                 f"(recursive={recursive})."
             )
-
