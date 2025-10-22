@@ -1,7 +1,6 @@
 # datamanager.py
 from __future__ import annotations
 
-import json
 import os
 import shutil
 import subprocess
@@ -9,8 +8,8 @@ import subprocess
 from dataclasses import dataclass, field
 from datalad.support.exceptions import IncompleteResultsError
 from datetime import datetime, timezone
-from pathlib import Path
-from typing import Optional, Dict, Any, Callable, Tuple
+from pathlib import Path, PurePosixPath
+from typing import Optional, Dict, Any, Callable
 
 # DataLad Python API
 from datalad import api as dl
@@ -37,7 +36,7 @@ class DataManagerConfig:
     datalad_profile: Optional[str] = None
 
     # MetaLad envelope defaults
-    extractor_name: str = "scidata_node_v1"
+    extractor_name: str = "datamanager_v1"
     extractor_version: str = "1.0"
 
     # Runtime knobs
@@ -77,7 +76,7 @@ class DataManager:
         default_project: Optional[str] = None,
         default_campaign: Optional[str] = None,
         datalad_profile: Optional[str] = "text2git",
-        extractor_name: str = "scidata_node_v1",
+        extractor_name: str = "datamanager_v1",
         extractor_version: str = "1.0",
         verbose: bool = True,
         env: Optional[Dict[str, str]] = None,
@@ -154,58 +153,107 @@ class DataManager:
         else:
             # create and register as subdataset of superds in one API call
             dl.create(path=str(path), dataset=str(superds), cfg_proc=self.cfg.datalad_profile)
-        self._save_meta(path, node_type=node_type, name=name)
+        self._save_meta(path, name=name, node_type=node_type)
 
-    def _save_meta(self, ds_path: Path, *, node_type: str, name: str, extra: Optional[Dict[str, Any]] = None) -> None:
+    def _save_meta(self, ds_path: Path, *, rel_path: Optional[Path] = Path(), name: Optional[str] = None,
+                   extra: Optional[Dict[str, Any]] = None, node_type: Optional[str] = 'experiment') -> None:
         """
-        Attach JSON-LD at dataset level using MetaLad (CLI).
+        Attach JSON-LD at dataset level using the  MetaLad Python API.
         :param ds_path: Path to the dataset
-        :param node_type: Node type of dataset
-        :param name: name that identifies the file or dataset for which the metadata was extracted
+        :param rel_path: Relative path to the file or folder whose meta-data should be attached serving as and
+                         identifier
+        :param name: human-readable name for the file or folder whose meta-data will be saved.
         :return: None
         """
-        # TODO: This is all very preliminary. Some of the datafields are placeholders. Not sure how
-        #    adding metadata from multiple files here at the dataset level will work out. Not tested.
-
         ds = Dataset(str(ds_path))
         if not ds.is_installed():
             raise RuntimeError(f"Dataset not installed at {ds_path}")
 
+        # Ensure rel_path is relative and normalized to POSIX for stable identifiers
+        if rel_path is None:
+            rel_path = Path()
+        if rel_path.is_absolute():
+            raise ValueError(f"rel_path must be relative to {ds_path}, got absolute: {rel_path}")
+
+        # POSIX-normalized relative path string, '' for dataset itself
+        relposix = '.' if rel_path == Path() else str(PurePosixPath(*rel_path.parts))
+
+        # Working tree probe (only if materialized); use dataset root when rel_path is empty
+        node_path = ds_path if relposix == '.' else (ds_path / rel_path)
+
         dataset_id = self._get_dataset_id(ds)
         dataset_version = self._get_dataset_version(ds)
         extraction_time = self.cfg.now_fn().replace(microsecond=0).isoformat()
-        extracted = {
-            "@context": {"@vocab": "", "datamanager": ""},
-            "@type": "Dataset",
-            "name": name,
-            "datamanager:nodeType": node_type,
+
+        # Choose a Schema.org type
+        if relposix == '.':
+            type_str = "dataset"
+        elif node_path.exists() and node_path.is_dir():
+            type_str = "Collection"
+        else:
+            type_str = "CreativeWork"
+
+        # Empty relpath identifies the dataset itself
+        if relposix != '.':
+            node_id = f"datalad:{node_type}{dataset_id}:{relposix}"
+            toplevel_type = 'file'
+        else:
+            node_id = f"datalad:{node_type}{dataset_id}"
+            toplevel_type = 'dataset'
+
+        # Interpret this JSON object as a Schema.org entity, so that name, description, etc., have their
+        # standardized meanings.
+        extracted: Dict[str, Any] = {
+            "@context": {
+                "@vocab": "https://schema.org/",
+                "dm": "https://your-vocab.example/terms/"
+            },
+            "@type": type_str,
+            "@id": node_id,
+            "identifier": relposix,  # machine ID (relative path)
         }
+        # Only include a human-facing name if you have one
+        if name:
+            extracted["name"] = name
+
         if extra:
             extracted.update(extra)
 
+        # The extractor is the current script, as metadata is manually provided when installing a file or folder
+        # This is the toplevel metadata record envelope, which contains the extracted metadata as a nested subfield
+        # All according to the JSON-LD schema
         payload = {
-            "type": "dataset",
+            "type": toplevel_type,
             "extractor_name": self.cfg.extractor_name,
             "extractor_version": self.cfg.extractor_version,
-            "extraction_parameter": {"node_type": node_type, "name": name},
+            "extraction_parameter": {
+                "path": relposix,
+                "node_type": node_type
+            },
             "extraction_time": extraction_time,
             "agent_name": self.cfg.user_name,
             "agent_email": self.cfg.user_email,
             "dataset_id": dataset_id,
             "dataset_version": dataset_version,
+            "path": relposix,
             "extracted_metadata": extracted
         }
 
-        p = subprocess.Popen(
-            ["datalad", "meta-add", "-d", str(ds_path), "-"],
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=self._proc_env()
-        )
-        out, err = p.communicate(json.dumps(payload))
-        if p.returncode != 0:
-            raise RuntimeError(f"meta-add failed for {ds_path} ({node_type}={name}): {err.strip()}")
+        try:
+            print(payload)
+            _ = dl.meta_add(metadata=payload, dataset=str(ds_path), allow_id_mismatch=False, json_lines=False,
+                            batch_mode=False, on_failure='stop', return_type='list')
+        except IncompleteResultsError as e:
+            where = f"{ds_path / rel_path}" if rel_path is not None else str(ds_path)
+            raise RuntimeError(f"meta-add failed for {where}: {e}") from e
 
-        # Commit metadata in this dataset (even if not yet registered by parent)
-        dl.save(dataset=str(ds_path), message=f"scidata: metadata for {node_type}={name}")
+        # Commit metadata; scope to metadata dir to keep the commit tight
+        meta_dir = Path(ds_path) / ".datalad" / "metadata"
+        dl.save(
+            dataset=str(ds_path),
+            path=str(meta_dir) if meta_dir.exists() else None,
+            message=f"scidata: metadata for {ds_path / rel_path if rel_path != Path() else ds_path}",
+        )
 
     def _get_dataset_id(self, ds: Dataset) -> str:
         # Prefer DataLad property; fallback to reading .datalad/config via Git if needed
@@ -320,7 +368,11 @@ class DataManager:
             else:
                 shutil.copytree(str(src), str(dest_path))
 
-        self._save_meta(ep, node_type="experiment", name=f"{ep.name} ({dest_path.name})", extra=metadata)
+        if not rename:
+            # with rename the file or foldername is already part of the destination path
+            dest_path = dest_path / src.name
+
+        self._save_meta(ep, rel_path=dest_path.relative_to(ep), extra=metadata)
         dl.save(dataset=str(ep), recursive=True, message=f"Installed {rename or src.name} in {self.cfg.user_name}/"
                                                          f"{project or ''}/{campaign or ''}/{experiment or ''}")
 
