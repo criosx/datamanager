@@ -1,6 +1,5 @@
 import datalad.api as dl
 
-import json
 import os
 import subprocess
 import tempfile
@@ -328,7 +327,35 @@ GIN_ACCESS = os.getenv("GIN_ACCESS", "https-ssh")    # "ssh" (recommended) or "h
 
 
 @unittest.skipUnless(GIN_TEST, "GIN test disabled (set SCIDATA_TEST_GIN=1 to enable)")
-class DataManagerResetSiblingTest(unittest.TestCase):
+class DataManagerPublishGINSiblingTest(unittest.TestCase):
+    def _ensure_published(self):
+        """
+        Publish the tree to a unique GIN repo and return the HTTPS clone URL.
+        :return:
+        """
+        self.dm.publish_gin_sibling(
+            sibling_name="gin",
+            repo_name=self.repo_name,
+            access_protocol=GIN_ACCESS,  # e.g., "https-ssh"
+            credential=None,
+            private=False,
+            recursive=True,
+        )
+        sibs = dl.siblings(dataset=str(self.root), action="query", return_type="list")
+        gin_urls = [s.get("url") for s in sibs if s.get("name") == "gin" and s.get("url")]
+        self.assertTrue(gin_urls, "Could not determine GIN clone URL from siblings()")
+        # Prefer HTTPS if both exist
+        gin_urls.sort(key=lambda u: (not u.startswith("http"), u))
+        return gin_urls[0]
+
+    def _fresh_clone(self, gin_url: str) -> Path:
+        """Clone the published root into a fresh temp dir and install subdatasets (repos only)."""
+        other_dir = Path(tempfile.mkdtemp()) / "clone"
+        other_dir.mkdir(parents=True, exist_ok=True)
+        dl.clone(source=gin_url, path=str(other_dir))
+        dl.get(dataset=str(other_dir), path=".", recursive=True, get_data=False)
+        return other_dir
+
     def setUp(self):
         # Local dataset with one subdataset so recursion is exercised
         self.work = Path(tempfile.mkdtemp())
@@ -354,7 +381,7 @@ class DataManagerResetSiblingTest(unittest.TestCase):
 
         self.repo_name = f"scidata-{uuid.uuid4().hex}"
 
-    def test_gin_happy_path(self):
+    def test_publish_sibling_to_gin(self):
         # Wire to GIN (create or reconfigure), recursively
         self.dm.publish_gin_sibling(
             sibling_name="gin",
@@ -386,3 +413,82 @@ class DataManagerResetSiblingTest(unittest.TestCase):
         self.assertFalse(dl.Dataset(str(sub)).repo.file_has_content("note.bin"))
         dl.get(dataset=str(sub), path=[str(sub / "note.bin")])  # fetches from 'gin' if needed
         self.assertTrue((sub / "note.bin").exists() and (sub / "note.bin").stat().st_size == 2)
+
+    def test_push_to_gin(self):
+        gin_url = self._ensure_published()
+
+        # Make a root change and a subdataset annex change
+        (self.root / "CHANGES.md").write_text("root change\n")
+        sub = self.root / "p" / "c" / "e" / "analysis"
+        (sub / "new.bin").write_bytes(b"\xAA\xBB\xCC")
+        dl.save(dataset=str(self.root), recursive=True, message="prepare push_to_gin test")
+
+        # Use DataManager API
+        self.dm.push_to_gin(dataset=str(self.root), recursive=True, message="dm push_to_gin")
+
+        # Verify by cloning fresh and checking both commits and annex content
+        other = self._fresh_clone(gin_url)
+        self.assertTrue((other / "CHANGES.md").exists(), "Root commit did not reach GIN")
+        # Annex file exists as pointer initially; fetch bytes:
+        dl.get(dataset=str(other / "p" / "c" / "e" / "analysis"),
+               path=[str(other / "p" / "c" / "e" / "analysis" / "new.bin")])
+        self.assertEqual((other / "p" / "c" / "e" / "analysis" / "new.bin").stat().st_size, 3)
+
+    def test_pull_from_gin(self):
+        gin_url = self._ensure_published()
+        # Second working copy simulates another computer
+        other = self._fresh_clone(gin_url)
+        dm_other = DataManager(other, user_name="Frank Heinrich", user_email="fheinrich@cmu.edu")
+
+        # Change on original and push
+        (self.root / "NOTE.txt").write_text("note v1\n")
+        dl.save(dataset=str(self.root), path=[str(self.root / "NOTE.txt")], message="v1")
+        self.dm.push_to_gin(dataset=str(self.root), recursive=True, message="push v1")
+
+        # Pull into the other clone
+        dm_other.pull_from_gin(dataset=str(other), recursive=True)
+        self.assertTrue((other / "NOTE.txt").exists(), "Pull did not bring down new file")
+
+        # Update again and verify second pull
+        (self.root / "NOTE.txt").write_text("note v2\n")
+        dl.save(dataset=str(self.root), path=[str(self.root / "NOTE.txt")], message="v2")
+        self.dm.push_to_gin(dataset=str(self.root), recursive=True, message="push v2")
+
+        dm_other.pull_from_gin(dataset=str(other), recursive=True)
+        self.assertEqual((other / "NOTE.txt").read_text(), "note v2\n", "Pull did not merge latest changes")
+
+    def test_get_data(self):
+        gin_url = self._ensure_published()
+        other = self._fresh_clone(gin_url)
+        dm_other = DataManager(other, user_name="Frank Heinrich", user_email="fheinrich@cmu.edu")
+
+        sub_other = other / "p" / "c" / "e" / "analysis"
+        target = sub_other / "note.bin"
+
+        # Ensure local content is absent
+        dl.drop(dataset=str(sub_other), path=[str(target)], what="filecontent", reckless="availability")
+        self.assertFalse(dl.Dataset(str(sub_other)).repo.file_has_content("note.bin"))
+
+        # Fetch bytes using DataManager API
+        dm_other.get_data(dataset=str(sub_other), path="note.bin", recursive=False)
+        self.assertTrue(dl.Dataset(str(sub_other)).repo.file_has_content("note.bin"))
+        self.assertEqual(target.stat().st_size, 2)
+
+    def test_drop_local(self):
+        gin_url = self._ensure_published()
+        other = self._fresh_clone(gin_url)
+        dm_other = DataManager(other, user_name="Frank Heinrich", user_email="fheinrich@cmu.edu")
+
+        sub_other = other / "p" / "c" / "e" / "analysis"
+        target = sub_other / "note.bin"
+
+        # Ensure we have bytes locally first
+        dl.get(dataset=str(sub_other), path=[str(target)])
+        self.assertTrue(dl.Dataset(str(sub_other)).repo.file_has_content("note.bin"))
+
+        # Drop via DataManager API
+        dm_other.drop_local(dataset=str(sub_other), path="note.bin", recursive=False)
+        self.assertFalse(dl.Dataset(str(sub_other)).repo.file_has_content("note.bin"))
+
+
+
