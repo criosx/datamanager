@@ -148,7 +148,7 @@ class DataManager:
                 dl.save(
                     dataset=str(superds),
                     path=[str(path)],
-                    message=f"Register existing subdataset {path} with parent dataset {str(superds)})"
+                    message=f"Register existing subdataset {path} with parent dataset {str(superds)}."
                 )
             return
 
@@ -182,8 +182,9 @@ class DataManager:
         :return: the path to the cloned GIN dataset
         """
         dest = Path(dest).expanduser().resolve()
-        if not (dest.is_dir() and not any(dest.iterdir())):
-            raise RuntimeError(f"Destination path {dest} does not exist or is not empty.")
+        dest.mkdir(parents=True, exist_ok=True)
+        if any(dest.iterdir()):
+            raise RuntimeError(f"Destination path {dest} must be empty.")
 
         if source_url is None:
             source_url = self.cfg.GIN_url
@@ -196,7 +197,7 @@ class DataManager:
         return dest
 
     @staticmethod
-    def drop_local(dataset: str | os.PathLike, path: str | os.PathLike, recursive: bool = False) -> None:
+    def drop_local(dataset: str | os.PathLike, path: str | os.PathLike = None, recursive: bool = False) -> None:
         """
         Drop local annexed content after confirming availability elsewhere.
         :param dataset: (str, os.Pathlike) path to the dataset for which to drop local content
@@ -205,10 +206,12 @@ class DataManager:
         :param recursive: whether to recursively step into subdatasets
         :return: no return value
         """
-        dl.drop(dataset=str(dataset), path=str(path), recursive=recursive, what='filecontent')
+        if path is not None:
+            path = str(path)
+        dl.drop(dataset=str(dataset), path=path, recursive=recursive, what='filecontent')
 
     @staticmethod
-    def get_data(dataset: str | os.PathLike, path: str | os.PathLike | None = None,
+    def get_data(dataset: str | os.PathLike, path: str | os.PathLike | list[str | os.PathLike] | None = None,
                  recursive: bool = False) -> None:
         """
         Retrieve annexed file content (bytes).
@@ -218,7 +221,14 @@ class DataManager:
         :param recursive: whether to recursively step into subdatasets
         :return: no return value
         """
-        dl.get(dataset=str(dataset), path=str(path) if path else None, recursive=recursive)
+        if path is None:
+            targets = ['.']
+        elif isinstance(path, (str, os.PathLike, Path)):
+            targets = [path]
+        else:
+            targets = list(path)
+        for p in targets:
+            dl.get(dataset=str(dataset), path=str(p) if path else None, recursive=recursive)
 
     def init_tree(self, *, project: Optional[str] = None, campaign: Optional[str] = None,
                   experiment: Optional[str] = None) -> Path:
@@ -258,7 +268,7 @@ class DataManager:
     def install_into_tree(self, source: os.PathLike | str, *, project: Optional[str], campaign: Optional[str],
                           experiment: str, category: str, dest_rel: Optional[os.PathLike | str] = None,
                           rename: Optional[str] = None, move: bool = False, metadata: Optional[Dict[str, Any]]
-                          = None) -> Path:
+                          = None, overwrite: bool = False) -> Path:
         """
         Install a file or folder into {root}/{project}/{campaign}/{experiment}/{category}
         or into an *existing* dataset below the category when dest_rel is given.
@@ -277,6 +287,7 @@ class DataManager:
         :param rename: (str) name under which the file or folder will be installed.
         :param move: (bool) move or copy file or folder
         :param metadata: (json) additional metadata to add to file or folder (dataset).
+        :param overwrite: (bool) whether to overwrite existing target or not
         :return: path to destination of file or dataset
         """
 
@@ -302,33 +313,37 @@ class DataManager:
         else:
             dest_path = cat_path
 
-        # add optional renaming to path and check if it exists
-        if rename:
-            dest_path = dest_path / rename
-            if dest_path.exists():
-                raise FileExistsError(dest_path)
+        # after computing the destination folder dest_path, create it if not already exists
+        dest_path.mkdir(parents=True, exist_ok=True)
+        # decide the final target path for file/dir
+        final_target = (dest_path / (rename or src.name))
+
+        if final_target.exists():
+            if not overwrite:
+                raise FileExistsError(final_target)
 
         # copy file or folder to destination, register metadata, save dataset
         if src.is_file():
+            # for files, move and copy2 will replace existing files of the same name by default
             if move:
-                shutil.move(str(src), str(dest_path))
+                shutil.move(str(src), str(final_target))
             else:
-                shutil.copy2(str(src), str(dest_path))
+                shutil.copy2(str(src), str(final_target))
         elif src.is_dir():
+            shutil.copytree(str(src), str(final_target), dirs_exist_ok=overwrite)
             if move:
-                shutil.move(str(src), str(dest_path))
-            else:
-                shutil.copytree(str(src), str(dest_path))
+                # the move command does not have a dirs_exist_ok option and would potentially
+                # place a source dir into an existing dest dir of the same name instead of
+                # replacing
+                src.rmdir()
+        else:
+            raise FileNotFoundError(src)
 
-        if not rename:
-            # with rename the file or foldername is already part of the destination path
-            dest_path = dest_path / src.name
-
-        self.save_meta(ep, path=dest_path.relative_to(ep), extra=metadata)
+        self.save_meta(ep, path=final_target.relative_to(ep), extra=metadata)
         dl.save(dataset=str(ep), recursive=True, message=f"Installed {rename or src.name} in {self.cfg.user_name}/"
                                                          f"{project or ''}/{campaign or ''}/{experiment or ''}")
 
-        return dest_path
+        return final_target
 
     def publish_gin_sibling(self, *, sibling_name: str = "gin", repo_name: str = "datamanager", dataset=None,
                             access_protocol: str = "https-ssh", credential: Optional[str] = None, private: bool = False,
@@ -373,16 +388,23 @@ class DataManager:
                 f"(recursive={recursive})."
             )
 
-    @staticmethod
-    def pull_from_gin(dataset: str | os.PathLike, recursive: bool = True) -> None:
+    def pull_from_gin(self, dataset: str | os.PathLike, recursive: bool = True,
+                      get_targets: list[str | os.PathLike] | None = None) -> None:
         """
         Pull latest history from GIN and merge.
         :param dataset: (str) path to the dataset to update from GIN
         :param recursive: whether recursively pull from GIN
+        :param get_targets: (list[str | os.PathLike | None]) list of content targets to get from GIN.
+                            The get is non-recursive. Use self.get_data if recursive is needed.
         :return: no return value
         """
         ds = Dataset(str(dataset))
+        sibs = ds.siblings(action='query')
+        if not any(s.get('name') == 'gin' for s in sibs):
+            raise RuntimeError("No 'gin' sibling configured for this dataset.")
         dl.update(dataset=str(ds.path), recursive=recursive, merge=True, how='fetch', sibling='gin')
+        if get_targets is not None:
+            self.get_data(dataset, path=get_targets, recursive=False)
 
     @staticmethod
     def push_to_gin(dataset: str | os.PathLike, recursive: bool = True, message: str | None = None) -> None:
@@ -398,12 +420,15 @@ class DataManager:
             ds.save(recursive=recursive, message=message)
         else:
             ds.save(recursive=recursive)
+        sibs = ds.siblings(action='query')
+        if not any(s.get('name') == 'gin' for s in sibs):
+            raise RuntimeError("No 'gin' sibling configured for this dataset.")
         ds.push(to='gin', recursive=recursive, data='auto')
 
-    def save_meta(self, ds_path: [str, Path], *, path: Optional[str, Path] = Path(), name: Optional[str] = None,
+    def save_meta(self, ds_path: str | Path, *, path: str | Path | None = None, name: Optional[str] = None,
                   extra: Optional[Dict[str, Any]] = None, node_type: Optional[str] = 'experiment') -> None:
         """
-        Attach JSON-LD at dataset level using the  MetaLad Python API.
+        Attach JSON-LD at dataset level to any file, folder, or the dataset itself using the MetaLad Python API.
         :param ds_path: (str, Path) path to the dataset
         :param path: (str, Path) Relative path to the file or folder whose meta-data should be attached serving as and
                      identifier
@@ -413,7 +438,8 @@ class DataManager:
                            defaults to 'experiment' the lowest level node
         :return: None
         """
-        ds = Dataset(str(ds_path))
+        ds_path = Path(ds_path)
+        ds = Dataset(ds_path)
         if not ds.is_installed():
             raise RuntimeError(f"Dataset not installed at {ds_path}")
 
@@ -429,7 +455,7 @@ class DataManager:
         relposix = '.' if path == Path() else str(PurePosixPath(*path.parts))
 
         # Working tree probe (only if materialized); use dataset root when rel_path is empty
-        node_path = ds_path if relposix == '.' else (ds_path / path)
+        item_path = ds_path if relposix == '.' else (ds_path / path)
 
         dataset_id = self._get_dataset_id(ds)
         dataset_version = self._get_dataset_version(ds)
@@ -438,7 +464,7 @@ class DataManager:
         # Choose a Schema.org type
         if relposix == '.':
             type_str = "dataset"
-        elif node_path.exists() and node_path.is_dir():
+        elif item_path.exists() and item_path.is_dir():
             type_str = "Collection"
         else:
             type_str = "CreativeWork"
@@ -490,11 +516,14 @@ class DataManager:
         }
 
         try:
-            print(payload)
+            if self.cfg.verbose:
+                print(f"Adding metadata to dataset {ds_path} for {relposix}")
+                print(f"Payload:")
+                print(payload)
             _ = dl.meta_add(metadata=payload, dataset=str(ds_path), allow_id_mismatch=False, json_lines=False,
                             batch_mode=False, on_failure='stop', return_type='list')
         except IncompleteResultsError as e:
-            where = f"{ds_path / path}" if path is not None else str(ds_path)
+            where = f"{item_path}"
             raise RuntimeError(f"meta-add failed for {where}: {e}") from e
 
         # Commit metadata; scope to metadata dir to keep the commit tight
@@ -502,7 +531,7 @@ class DataManager:
         dl.save(
             dataset=str(ds_path),
             path=str(meta_dir) if meta_dir.exists() else None,
-            message=f"scidata: metadata for {ds_path / path if path != Path() else ds_path}",
+            message=f"scidata: metadata for {item_path}",
         )
 
 
