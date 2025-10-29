@@ -382,6 +382,31 @@ class DataManager:
 
         ds.push(to=sibling_name, recursive=recursive, data='auto')
 
+        out = ds.siblings(
+            'query',
+            name='gin',
+            # as_common_datasrc=True,
+            recursive=recursive
+        )
+
+        # register relative GIN URLs in .gitmodules of the parents as the abov command placed them only in the
+        # .git/ record of the sibling itself
+        for entry in out:
+            # only use records for gin siblings of subdatasets, not for the root dataset itself
+            if entry['name'] == 'gin' and entry['refds'] != entry['path']:
+                sd_url = entry['url']
+                sd_path = Path(entry['path']).resolve()
+                ds_path = Path(sd_path).resolve().parent
+                dl.subdatasets(
+                    dataset=str(ds_path),
+                    path=str(sd_path),
+                    set_property=[('url', sd_url)]
+                )
+
+        ds = Dataset(str(dataset))
+        ds.save(recursive=recursive, message='GIN publishing')
+        ds.push(to=sibling_name, recursive=recursive, data='auto')
+
         if self.cfg.verbose:
             print(
                 f"[Datamanager] Reset sibling '{sibling_name}' at GIN repo '{repo_name}' and pushed "
@@ -423,7 +448,7 @@ class DataManager:
         sibs = ds.siblings(action='query')
         if not any(s.get('name') == 'gin' for s in sibs):
             raise RuntimeError("No 'gin' sibling configured for this dataset.")
-        ds.push(to='gin', recursive=recursive, data='auto')
+        ds.push(to='gin', recursive=recursive, data='anything')
 
     def save_meta(self, ds_path: str | Path, *, path: str | Path | None = None, name: Optional[str] = None,
                   extra: Optional[Dict[str, Any]] = None, node_type: Optional[str] = 'experiment') -> None:

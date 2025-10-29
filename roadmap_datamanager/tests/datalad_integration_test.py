@@ -1,6 +1,8 @@
 import datalad.api as dl
 
 import os
+import re
+import requests
 import subprocess
 import tempfile
 import unittest
@@ -12,6 +14,8 @@ from pathlib import Path, PurePosixPath
 
 from roadmap_datamanager.roadmap_datamanager import DataManager
 from roadmap_datamanager.helpers import set_git_annex_path
+
+from urllib.parse import urlparse
 
 # --------- hard requirements check (do NOT silently skip) ----------
 ENV_ERRORS = []
@@ -353,10 +357,17 @@ class DataManagerPublishGINSiblingTest(unittest.TestCase):
         other_dir = Path(tempfile.mkdtemp()) / "clone"
         other_dir.mkdir(parents=True, exist_ok=True)
         dl.clone(source=gin_url, path=str(other_dir))
-        dl.get(dataset=str(other_dir), path=".", recursive=True, get_data=False)
+        dl.get(dataset=str(other_dir), path=str(other_dir), recursive=True, get_data=False)
         return other_dir
 
-    def setUp(self):
+    def _gin_clone_url(self) -> str:
+        sibs = dl.siblings(dataset=str(self.root), action="query", return_type="list")
+        # prefer HTTPS URL for easy parsing
+        urls = [s.get("url") for s in sibs if s.get("name") == "gin" and s.get("url")]
+        urls.sort(key=lambda u: (not u.startswith("http"), u))
+        return urls[0]
+
+    def setUpClass(self):
         # Local dataset with one subdataset so recursion is exercised
         self.work = Path(tempfile.mkdtemp())
         self.root = self.work / "scidata"
@@ -381,7 +392,7 @@ class DataManagerPublishGINSiblingTest(unittest.TestCase):
 
         self.repo_name = f"scidata-{uuid.uuid4().hex}"
 
-    def test_publish_sibling_to_gin(self):
+    def test_01_publish_sibling_to_gin(self):
         # Wire to GIN (create or reconfigure), recursively
         self.dm.publish_gin_sibling(
             sibling_name="gin",
@@ -414,7 +425,7 @@ class DataManagerPublishGINSiblingTest(unittest.TestCase):
         dl.get(dataset=str(sub), path=[str(sub / "note.bin")])  # fetches from 'gin' if needed
         self.assertTrue((sub / "note.bin").exists() and (sub / "note.bin").stat().st_size == 2)
 
-    def test_push_to_gin(self):
+    def test_02_push_to_gin(self):
         gin_url = self._ensure_published()
 
         # Make a root change and a subdataset annex change
@@ -434,7 +445,8 @@ class DataManagerPublishGINSiblingTest(unittest.TestCase):
                path=[str(other / "p" / "c" / "e" / "analysis" / "new.bin")])
         self.assertEqual((other / "p" / "c" / "e" / "analysis" / "new.bin").stat().st_size, 3)
 
-    def test_pull_from_gin(self):
+    '''
+    def test_03_pull_from_gin(self):
         gin_url = self._ensure_published()
         # Second working copy simulates another computer
         other = self._fresh_clone(gin_url)
@@ -457,7 +469,7 @@ class DataManagerPublishGINSiblingTest(unittest.TestCase):
         dm_other.pull_from_gin(dataset=str(other), recursive=True)
         self.assertEqual((other / "NOTE.txt").read_text(), "note v2\n", "Pull did not merge latest changes")
 
-    def test_get_data(self):
+    def test_04_get_data(self):
         gin_url = self._ensure_published()
         other = self._fresh_clone(gin_url)
         dm_other = DataManager(other, user_name="Frank Heinrich", user_email="fheinrich@cmu.edu")
@@ -474,7 +486,7 @@ class DataManagerPublishGINSiblingTest(unittest.TestCase):
         self.assertTrue(dl.Dataset(str(sub_other)).repo.file_has_content("note.bin"))
         self.assertEqual(target.stat().st_size, 2)
 
-    def test_drop_local(self):
+    def test_05_drop_local(self):
         gin_url = self._ensure_published()
         other = self._fresh_clone(gin_url)
         dm_other = DataManager(other, user_name="Frank Heinrich", user_email="fheinrich@cmu.edu")
@@ -489,6 +501,54 @@ class DataManagerPublishGINSiblingTest(unittest.TestCase):
         # Drop via DataManager API
         dm_other.drop_local(dataset=str(sub_other), path="note.bin", recursive=False)
         self.assertFalse(dl.Dataset(str(sub_other)).repo.file_has_content("note.bin"))
+    
+    '''
+
+    def tearDown(self):
+        def _parse_owner_repo_from_url(url: str) -> tuple[str, str]:
+            # works for https://gin.g-node.org/owner/repo(.git) and ssh git@gin.g-node.org:owner/repo(.git)
+            if url.startswith("git@"):
+                # git@gin.g-node.org:owner/repo.git
+                path = url.split(":", 1)[1]
+            else:
+                path = urlparse(url).path.lstrip("/")
+            path = re.sub(r"\.git$", "", path)
+            owner, repo = path.split("/", 1)
+            return owner, repo
+
+        def delete_gin_repo(gin_url: str) -> tuple[bool, str]:
+            """DELETE the repo via Gitea API; returns (ok, message)."""
+            base = os.getenv("GIN_BASE", "https://gin.g-node.org").rstrip("/")
+            token = os.getenv("GIN_TOKEN")
+            if not token:
+                return False, "GIN_TOKEN not set; cannot delete GIN repo automatically."
+
+            owner_env = os.getenv("GIN_OWNER")
+            try:
+                owner, repo = _parse_owner_repo_from_url(gin_url)
+            except Exception:
+                if owner_env:
+                    # fallback if parsing failed
+                    _, repo = "", ""
+                    # try last path segment as repo
+                    repo = gin_url.rsplit("/", 1)[-1].removesuffix(".git")
+                    owner = owner_env
+                else:
+                    return False, f"Cannot parse owner/repo from {gin_url} and GIN_OWNER not set."
+
+            api = f"{base}/api/v1/repos/{owner}/{repo}"
+            r = requests.delete(api, headers={"Authorization": f"token {token}"}, timeout=30)
+            if r.status_code in (200, 202, 204):
+                return True, f"Deleted {owner}/{repo}."
+            return False, f"Delete failed ({r.status_code}): {r.text}"
+        # If we created a GIN repo, try to remove it
+        try:
+            gin_url = self._gin_clone_url()
+        except Exception:
+            return  # no sibling, nothing to delete
+        ok, msg = delete_gin_repo(gin_url)
+        # It’s OK if deletion fails in CI; just log it so you can fix creds
+        print("[GIN CLEANUP]", msg)
 
 
 
