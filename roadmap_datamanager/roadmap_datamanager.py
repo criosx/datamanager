@@ -174,6 +174,16 @@ class DataManager:
             return p.stdout.strip()
         raise RuntimeError(f"Could not read dataset id in {ds.path}")
 
+    def _ssh_to_https(self, u: str) -> str:
+        # git@gin.g-node.org:/owner/repo(.git) -> https://gin.g-node.org/owner/repo
+        if u.startswith('git@'):
+            host = u.split('@', 1)[1].split(':', 1)[0]
+            path = u.split(':', 1)[1]
+            if path.endswith('.git'):
+                path = path[:-4]
+            return f"https://{host}/{path}"
+        return u
+
     def clone_from_gin(self, dest: str | os.PathLike, source_url: str = None) -> Path:
         """
         Clone a superdataset from GIN into dest; install subdatasets (no data).
@@ -222,13 +232,17 @@ class DataManager:
         :return: no return value
         """
         if path is None:
-            targets = ['.']
+            targets = None
         elif isinstance(path, (str, os.PathLike, Path)):
             targets = [path]
         else:
             targets = list(path)
-        for p in targets:
-            dl.get(dataset=str(dataset), path=str(p) if path else None, recursive=recursive)
+
+        if targets is None:
+            dl.get(dataset=str(dataset), recursive=recursive)
+        else:
+            for p in targets:
+                dl.get(dataset=str(dataset), path=str(p) if path else None, recursive=recursive)
 
     def init_tree(self, *, project: Optional[str] = None, campaign: Optional[str] = None,
                   experiment: Optional[str] = None) -> Path:
@@ -346,7 +360,7 @@ class DataManager:
         return final_target
 
     def publish_gin_sibling(self, *, sibling_name: str = "gin", repo_name: str = "datamanager", dataset=None,
-                            access_protocol: str = "https-ssh", credential: Optional[str] = None, private: bool = False,
+                            access_protocol: str = "ssh", credential: Optional[str] = None, private: bool = False,
                             recursive: bool = False) -> None:
         """
         Creates and pushes a gin sibling dataset to {repo_name}.
@@ -380,30 +394,50 @@ class DataManager:
             private=private
         )
 
-        ds.push(to=sibling_name, recursive=recursive, data='auto')
+        ds.push(to=sibling_name, recursive=recursive, data='anything')
 
         out = ds.siblings(
             'query',
             name='gin',
-            # as_common_datasrc=True,
+            as_common_datasrc=f'{sibling_name}-src',
             recursive=recursive
         )
 
         # register relative GIN URLs in .gitmodules of the parents as the abov command placed them only in the
         # .git/ record of the sibling itself
         for entry in out:
-            # only use records for gin siblings of subdatasets, not for the root dataset itself
-            if entry['name'] == 'gin' and entry['refds'] != entry['path']:
-                sd_url = entry['url']
-                sd_path = Path(entry['path']).resolve()
-                ds_path = Path(sd_path).resolve().parent
+            # only subdatasets (not the root):
+            if entry.get('name') != sibling_name or entry.get('refds') == entry.get('path'):
+                continue
+
+            sd_path = Path(entry['path']).resolve()
+            parent = sd_path.parent
+
+            # Prefer HTTPS browser URL (no .git). If we only have SSH, convert it.
+            url = entry.get('url') or ''
+            pushurl = entry.get('pushurl') or entry.get('annexurl') or ''
+
+            # Normalize the primary URL for .gitmodules
+            if url.startswith('http'):
+                https_url = url[:-4] if url.endswith('.git') else url
+            else:
+                https_url = self._ssh_to_https(url)
+
+            dl.subdatasets(
+                dataset=str(parent),
+                path=str(sd_path),
+                set_property=[('url', https_url)]
+            )
+
+            # Optional: add SSH as a fallback candidate for collaborators
+            if pushurl:
                 dl.subdatasets(
-                    dataset=str(ds_path),
+                    dataset=str(parent),
                     path=str(sd_path),
-                    set_property=[('url', sd_url)]
+                    set_property=[('datalad-url', pushurl)],
+                    state='present',
                 )
 
-        ds = Dataset(str(dataset))
         ds.save(recursive=recursive, message='GIN publishing')
         ds.push(to=sibling_name, recursive=recursive, data='auto')
 
@@ -413,30 +447,31 @@ class DataManager:
                 f"(recursive={recursive})."
             )
 
-    def pull_from_gin(self, dataset: str | os.PathLike, recursive: bool = True,
-                      get_targets: list[str | os.PathLike] | None = None) -> None:
+    def pull_from_remotes(self, dataset: str | os.PathLike, recursive: bool = True, sibling_name: str = None,
+                          get_targets: list[str | os.PathLike] | None = None) -> None:
         """
         Pull latest history from GIN and merge.
-        :param dataset: (str) path to the dataset to update from GIN
-        :param recursive: whether recursively pull from GIN
-        :param get_targets: (list[str | os.PathLike | None]) list of content targets to get from GIN.
+        :param dataset: (str) path to the dataset to update from remotes
+        :param recursive: whether recursively pull from remotes, default True
+        :param sibling_name: (str) name of the sibling datasets to pull from (such as 'gin' for GIN publishing),
+                             default: None (recommended), which self-determines the target to pull from
+        :param get_targets: (list[str | os.PathLike | None]) list of content targets to get from remotes.
                             The get is non-recursive. Use self.get_data if recursive is needed.
         :return: no return value
         """
         ds = Dataset(str(dataset))
-        sibs = ds.siblings(action='query')
-        if not any(s.get('name') == 'gin' for s in sibs):
-            raise RuntimeError("No 'gin' sibling configured for this dataset.")
-        dl.update(dataset=str(ds.path), recursive=recursive, merge=True, how='fetch', sibling='gin')
+        dl.update(dataset=str(ds.path), recursive=recursive, how='merge', sibling=sibling_name)
         if get_targets is not None:
             self.get_data(dataset, path=get_targets, recursive=False)
 
     @staticmethod
-    def push_to_gin(dataset: str | os.PathLike, recursive: bool = True, message: str | None = None) -> None:
+    def push_to_remotes(dataset: str | os.PathLike, recursive: bool = True, message: str | None = None, sibling_name:
+                        str = None) -> None:
         """
         Save and push commits + annexed content to GIN.
         :param dataset: (str, os.Pathlike) path to the dataset to push to GIN
         :param recursive: (bool) whether to recursively push subdatasets
+        :param sibling_name: (str) name of the sibling datasets to push to GIN
         :param message: (str) optional commit message to push to GIN
         :return: no return value
         """
@@ -445,10 +480,17 @@ class DataManager:
             ds.save(recursive=recursive, message=message)
         else:
             ds.save(recursive=recursive)
-        sibs = ds.siblings(action='query')
-        if not any(s.get('name') == 'gin' for s in sibs):
-            raise RuntimeError("No 'gin' sibling configured for this dataset.")
-        ds.push(to='gin', recursive=recursive, data='anything')
+
+        try:
+            ds.push(to=sibling_name, recursive=recursive, data='anything')
+        except Exception as e:
+            # Fallback: pick a sane sibling name
+            sibs = ds.siblings(action="query", return_type="list")
+            names = {s["name"] for s in sibs if s.get("name")}
+            fallback = "gin" if "gin" in names else ("origin" if "origin" in names else None)
+            if not fallback:
+                raise RuntimeError("No publication target configured and no 'gin'/'origin' sibling found.") from e
+            ds.push(to=fallback, recursive=recursive, data="anything")
 
     def save_meta(self, ds_path: str | Path, *, path: str | Path | None = None, name: Optional[str] = None,
                   extra: Optional[Dict[str, Any]] = None, node_type: Optional[str] = 'experiment') -> None:

@@ -15,6 +15,7 @@ from pathlib import Path, PurePosixPath
 from roadmap_datamanager.roadmap_datamanager import DataManager
 from roadmap_datamanager.helpers import set_git_annex_path
 
+from typing import ClassVar
 from urllib.parse import urlparse
 
 # --------- hard requirements check (do NOT silently skip) ----------
@@ -332,6 +333,10 @@ GIN_ACCESS = os.getenv("GIN_ACCESS", "https-ssh")    # "ssh" (recommended) or "h
 
 @unittest.skipUnless(GIN_TEST, "GIN test disabled (set SCIDATA_TEST_GIN=1 to enable)")
 class DataManagerPublishGINSiblingTest(unittest.TestCase):
+    work = ClassVar[Path]
+    root = ClassVar[Path]
+    dm = ClassVar[DataManager]
+
     def _ensure_published(self):
         """
         Publish the tree to a unique GIN repo and return the HTTPS clone URL.
@@ -367,30 +372,31 @@ class DataManagerPublishGINSiblingTest(unittest.TestCase):
         urls.sort(key=lambda u: (not u.startswith("http"), u))
         return urls[0]
 
-    def setUpClass(self):
+    @classmethod
+    def setUpClass(cls):
         # Local dataset with one subdataset so recursion is exercised
-        self.work = Path(tempfile.mkdtemp())
-        self.root = self.work / "scidata"
-        self.dm = DataManager(
-            self.root,
+        cls.work = Path(tempfile.mkdtemp())
+        cls.root = cls.work / "scidata"
+        cls.dm = DataManager(
+            cls.root,
             user_name="Frank Heinrich",
             user_email="fheinrich@cmu.edu"
         )
-        self.dm.init_tree(project="p", campaign="c", experiment="e")
+        cls.dm.init_tree(project="p", campaign="c", experiment="e")
 
         # Add a subdataset under the experiment
-        sub = self.root / "p" / "c" / "e" / "analysis"
-        dl.create(path=str(sub), dataset=str(self.root / "p" / "c" / "e"))
-        dl.save(dataset=str(self.root), recursive=True, message="add analysis subdataset")
+        sub = cls.root / "p" / "c" / "e" / "analysis"
+        dl.create(path=str(sub), dataset=str(cls.root / "p" / "c" / "e"))
+        dl.save(dataset=str(cls.root), recursive=True, message="add analysis subdataset")
 
         # Make sure there is at least one commit to push everywhere
-        (self.root / "README.md").write_text("root readme\n")
-        dl.save(dataset=str(self.root), path=[str(self.root / "README.md")], message="seed root")
+        (cls.root / "README.md").write_text("root readme\n")
+        dl.save(dataset=str(cls.root), path=[str(cls.root / "README.md")], message="seed root")
 
         (sub / "note.bin").write_bytes(b"\x00\x01")
         dl.save(dataset=str(sub), path=[str(sub / "note.bin")], message="seed subdataset")
 
-        self.repo_name = f"scidata-{uuid.uuid4().hex}"
+        cls.repo_name = f"scidata-{uuid.uuid4().hex}"
 
     def test_01_publish_sibling_to_gin(self):
         # Wire to GIN (create or reconfigure), recursively
@@ -432,10 +438,10 @@ class DataManagerPublishGINSiblingTest(unittest.TestCase):
         (self.root / "CHANGES.md").write_text("root change\n")
         sub = self.root / "p" / "c" / "e" / "analysis"
         (sub / "new.bin").write_bytes(b"\xAA\xBB\xCC")
-        dl.save(dataset=str(self.root), recursive=True, message="prepare push_to_gin test")
+        dl.save(dataset=str(self.root), recursive=True, message="prepare push_to_remotes test")
 
         # Use DataManager API
-        self.dm.push_to_gin(dataset=str(self.root), recursive=True, message="dm push_to_gin")
+        self.dm.push_to_remotes(dataset=str(self.root), recursive=True, message="dm push_to_remotes")
 
         # Verify by cloning fresh and checking both commits and annex content
         other = self._fresh_clone(gin_url)
@@ -445,7 +451,6 @@ class DataManagerPublishGINSiblingTest(unittest.TestCase):
                path=[str(other / "p" / "c" / "e" / "analysis" / "new.bin")])
         self.assertEqual((other / "p" / "c" / "e" / "analysis" / "new.bin").stat().st_size, 3)
 
-    '''
     def test_03_pull_from_gin(self):
         gin_url = self._ensure_published()
         # Second working copy simulates another computer
@@ -455,18 +460,18 @@ class DataManagerPublishGINSiblingTest(unittest.TestCase):
         # Change on original and push
         (self.root / "NOTE.txt").write_text("note v1\n")
         dl.save(dataset=str(self.root), path=[str(self.root / "NOTE.txt")], message="v1")
-        self.dm.push_to_gin(dataset=str(self.root), recursive=True, message="push v1")
+        self.dm.push_to_remotes(dataset=str(self.root), recursive=True, message="push v1")
 
         # Pull into the other clone
-        dm_other.pull_from_gin(dataset=str(other), recursive=True)
+        dm_other.pull_from_remotes(dataset=str(other), recursive=True)
         self.assertTrue((other / "NOTE.txt").exists(), "Pull did not bring down new file")
 
         # Update again and verify second pull
         (self.root / "NOTE.txt").write_text("note v2\n")
         dl.save(dataset=str(self.root), path=[str(self.root / "NOTE.txt")], message="v2")
-        self.dm.push_to_gin(dataset=str(self.root), recursive=True, message="push v2")
+        self.dm.push_to_remotes(dataset=str(self.root), recursive=True, message="push v2")
 
-        dm_other.pull_from_gin(dataset=str(other), recursive=True)
+        dm_other.pull_from_remotes(dataset=str(other), recursive=True)
         self.assertEqual((other / "NOTE.txt").read_text(), "note v2\n", "Pull did not merge latest changes")
 
     def test_04_get_data(self):
@@ -482,7 +487,7 @@ class DataManagerPublishGINSiblingTest(unittest.TestCase):
         self.assertFalse(dl.Dataset(str(sub_other)).repo.file_has_content("note.bin"))
 
         # Fetch bytes using DataManager API
-        dm_other.get_data(dataset=str(sub_other), path="note.bin", recursive=False)
+        dm_other.get_data(dataset=str(sub_other), path=str(target), recursive=False)
         self.assertTrue(dl.Dataset(str(sub_other)).repo.file_has_content("note.bin"))
         self.assertEqual(target.stat().st_size, 2)
 
@@ -499,12 +504,10 @@ class DataManagerPublishGINSiblingTest(unittest.TestCase):
         self.assertTrue(dl.Dataset(str(sub_other)).repo.file_has_content("note.bin"))
 
         # Drop via DataManager API
-        dm_other.drop_local(dataset=str(sub_other), path="note.bin", recursive=False)
+        dm_other.drop_local(dataset=str(sub_other), path=target, recursive=False)
         self.assertFalse(dl.Dataset(str(sub_other)).repo.file_has_content("note.bin"))
-    
-    '''
 
-    def tearDown(self):
+    def test_06_remove_gin_repository(self):
         def _parse_owner_repo_from_url(url: str) -> tuple[str, str]:
             # works for https://gin.g-node.org/owner/repo(.git) and ssh git@gin.g-node.org:owner/repo(.git)
             if url.startswith("git@"):
@@ -541,13 +544,14 @@ class DataManagerPublishGINSiblingTest(unittest.TestCase):
             if r.status_code in (200, 202, 204):
                 return True, f"Deleted {owner}/{repo}."
             return False, f"Delete failed ({r.status_code}): {r.text}"
+
         # If we created a GIN repo, try to remove it
         try:
             gin_url = self._gin_clone_url()
         except Exception:
             return  # no sibling, nothing to delete
         ok, msg = delete_gin_repo(gin_url)
-        # It’s OK if deletion fails in CI; just log it so you can fix creds
+        # It’s OK if deletion fails in CI; just log it, so you can fix creds
         print("[GIN CLEANUP]", msg)
 
 
