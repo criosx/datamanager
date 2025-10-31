@@ -5,7 +5,6 @@ import os
 import shutil
 import subprocess
 
-from dataclasses import dataclass, field
 from datalad.support.exceptions import IncompleteResultsError
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
@@ -16,7 +15,8 @@ from datalad import api as dl
 from datalad.distribution.dataset import Dataset
 
 # ROADMAP datamanager modules
-from roadmap_datamanager import dm_config as dmc
+from roadmap_datamanager import configuration as dmc
+from roadmap_datamanager.helpers import ssh_to_https
 
 
 #  Install policy
@@ -32,9 +32,9 @@ class DataManager:
     """
     def __init__(
         self,
-        root: os.PathLike | str,
-        user_name: str,
-        user_email: str,
+        root: os.PathLike | str | None = None,
+        user_name: str | None = None,
+        user_email: str | None = None,
         *,
         default_project: Optional[str] = None,
         default_campaign: Optional[str] = None,
@@ -59,6 +59,9 @@ class DataManager:
         eff_default_campaign = default_campaign or persisted.get("default_campaign")
         eff_GIN_url = GIN_url or persisted.get("GIN_url")
 
+        if eff_user_name is None or eff_user_email is None:
+            raise RuntimeError("DataManager requires user_name and user_email (none persisted yet).")
+
         # build config
         self.root = Path(eff_root).expanduser().resolve()
         self.root.mkdir(parents=True, exist_ok=True)
@@ -78,6 +81,15 @@ class DataManager:
             GIN_url=eff_GIN_url,
         )
 
+        dmc.save_persistent_cfg({
+            "dm_root": str(self.root),
+            "user_name": self.cfg.user_name,
+            "user_email": self.cfg.user_email,
+            "default_project": self.cfg.default_project,
+            "default_campaign": self.cfg.default_campaign,
+            "GIN_url": self.cfg.GIN_url,
+        })
+
         if self.cfg.verbose:
             print(f"[DataManager] root={self.root}")
             print(f"[DataManager] user={self.cfg.user_name} <{self.cfg.user_email}>")
@@ -85,6 +97,24 @@ class DataManager:
                 print(f"[DataManager] defaults: project={self.cfg.default_project} "
                       f"campaign={self.cfg.default_campaign}")
             print(f"[DataManager] profile={self.cfg.datalad_profile or '(none)'} ")
+
+    @classmethod
+    def from_persisted(cls):
+        """
+        Return a DataManager initialized from the last saved configuration.
+        """
+        persisted = dmc.load_persistent_cfg()
+        if not persisted:
+            raise RuntimeError("No persistent configuration found — initialize once first.")
+
+        return cls(
+            root=persisted.get("dm_root"),
+            user_name=persisted.get("user_name"),
+            user_email=persisted.get("user_email"),
+            default_project=persisted.get("default_project"),
+            default_campaign=persisted.get("default_campaign"),
+            GIN_url=persisted.get("GIN_url"),
+        )
 
     @staticmethod
     def _get_dataset_version(ds: Dataset) -> str:
@@ -147,16 +177,6 @@ class DataManager:
         # Example: enforce non-interactive Git
         env.setdefault("GIT_TERMINAL_PROMPT", "0")
         return env
-
-    def _ssh_to_https(self, u: str) -> str:
-        # git@gin.g-node.org:/owner/repo(.git) -> https://gin.g-node.org/owner/repo
-        if u.startswith('git@'):
-            host = u.split('@', 1)[1].split(':', 1)[0]
-            path = u.split(':', 1)[1]
-            if path.endswith('.git'):
-                path = path[:-4]
-            return f"https://{host}/{path}"
-        return u
 
     def clone_from_gin(self, dest: str | os.PathLike, source_url: str = None) -> Path:
         """
@@ -395,7 +415,7 @@ class DataManager:
             if url.startswith('http'):
                 https_url = url[:-4] if url.endswith('.git') else url
             else:
-                https_url = self._ssh_to_https(url)
+                https_url = ssh_to_https(url)
 
             dl.subdatasets(
                 dataset=str(parent),
@@ -465,6 +485,19 @@ class DataManager:
             if not fallback:
                 raise RuntimeError("No publication target configured and no 'gin'/'origin' sibling found.") from e
             ds.push(to=fallback, recursive=recursive, data="anything")
+
+    def save_current_dm_configuration(self):
+        """
+        Persist the current data manager configuration to disk.
+        """
+        dmc.save_persistent_cfg({
+            "dm_root": str(self.root),
+            "user_name": self.cfg.user_name,
+            "user_email": self.cfg.user_email,
+            "default_project": self.cfg.default_project,
+            "default_campaign": self.cfg.default_campaign,
+            "GIN_url": self.cfg.GIN_url,
+        })
 
     def save_meta(self, ds_path: str | Path, *, path: str | Path | None = None, name: Optional[str] = None,
                   extra: Optional[Dict[str, Any]] = None, node_type: Optional[str] = 'experiment') -> None:
@@ -574,8 +607,3 @@ class DataManager:
             path=str(meta_dir) if meta_dir.exists() else None,
             message=f"scidata: metadata for {item_path}",
         )
-
-
-
-
-

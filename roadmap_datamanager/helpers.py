@@ -1,13 +1,11 @@
 from __future__ import annotations
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 import shutil
 import subprocess
 import shlex
-from typing import Iterable, Optional
+from typing import Optional
 import os
-import datalad.api as dl
 
 
 @dataclass(frozen=True)
@@ -40,44 +38,12 @@ def set_git_annex_path():
         return False
 
 
-def slug(s: str) -> str:
-    return s.strip().replace(" ", "_")
-
-
-def p_user(ctx: TreeCtx) -> Path:
-    return ctx.root / slug(ctx.user)
-
-
-def p_project(ctx: TreeCtx) -> Path:
-    return p_user(ctx) / slug(ctx.project or "project")
-
-
-def p_campaign(ctx: TreeCtx) -> Path:
-    return p_project(ctx) / slug(ctx.campaign or "campaign")
-
-
-def p_experiment(ctx: TreeCtx) -> Path:
-    return p_campaign(ctx) / slug(ctx.experiment or "experiment")
-
-
-def ensure_dataset(path: Path):
-    if not (path / ".datalad").exists():
-        dl.create(path=str(path), force=True)
-    return path
-
-
-def register_subdataset(parent: Path, child: Path):
-    # add child as subdataset relative to parent
-    dl.subdatasets(dataset=str(parent), path=str(child), add=True)
-
-
-def save(path: Path, msg: str):
-    dl.save(path=str(path), message=msg)
-
-
-def add_files(ds_path: Path, files: Iterable[Path], to_git: bool = False):
-    dl.add(dataset=str(ds_path), path=[str(f) for f in files], to_git=to_git)
-
-
-def now_iso() -> str:
-    return datetime.utcnow().isoformat(timespec="seconds") + "Z"
+def ssh_to_https(u: str) -> str:
+    # git@gin.g-node.org:/owner/repo(.git) -> https://gin.g-node.org/owner/repo
+    if u.startswith('git@'):
+        host = u.split('@', 1)[1].split(':', 1)[0]
+        path = u.split(':', 1)[1]
+        if path.endswith('.git'):
+            path = path[:-4]
+        return f"https://{host}/{path}"
+    return u

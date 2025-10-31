@@ -1,4 +1,5 @@
 import json
+import os
 
 from datetime import datetime, timezone
 from dataclasses import dataclass, field
@@ -49,6 +50,10 @@ class DataManagerConfig:
 
 
 def default_config_path() -> Path:
+    # env override
+    override = os.getenv("ROADMAP_DM_CONFIG")
+    if override:
+        return Path(override).expanduser()
     if user_config_dir:
         return Path(user_config_dir("roadmap-datamanager", "roadmap")) / "config.json"
     # fallback

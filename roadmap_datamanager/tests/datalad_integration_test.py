@@ -12,13 +12,13 @@ from datalad.distribution.dataset import Dataset
 from datalad.support.exceptions import IncompleteResultsError
 from pathlib import Path, PurePosixPath
 
-from roadmap_datamanager.roadmap_datamanager import DataManager
+from roadmap_datamanager.datamanager import DataManager
 from roadmap_datamanager.helpers import set_git_annex_path
 
 from typing import ClassVar
 from urllib.parse import urlparse
 
-# --------- hard requirements check (do NOT silently skip) ----------
+# hard requirements check (do NOT silently skip)
 ENV_ERRORS = []
 
 # DataLad import
@@ -27,18 +27,9 @@ try:
 except ImportError:
     ENV_ERRORS.append("datalad (Python package) not importable in this interpreter")
 
-# datalad-metalad CLI available
-try:
-    p = subprocess.run(["datalad", "meta-dump", "-h"],
-                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-    if p.returncode != 0:
-        ENV_ERRORS.append("datalad-metalad CLI not available (failed: `datalad meta-dump -h`)")
-except FileNotFoundError:
-    ENV_ERRORS.append("`datalad` executable not on PATH for this Python process")
-
 
 # git-annex available and recent enough
-def _annex_ok():
+def annex_ok():
     try:
         set_git_annex_path()
         out = subprocess.check_output(["git-annex", "version"], text=True)
@@ -51,14 +42,45 @@ def _annex_ok():
     return None
 
 
-annex_err = _annex_ok()
+annex_err = annex_ok()
 if annex_err:
     ENV_ERRORS.append(annex_err)
-
 ENV_READY = not ENV_ERRORS
 
 
-def _has_meta(ds: Path, *, rel_path: Path, node_type: str) -> bool:
+def create_tmp_dm_instance():
+    """
+    Creates a datamanager instance in a temporary directory
+    :return: (the dm instance, (Path) the root directory of the instance)
+    """
+    root = Path(tempfile.mkdtemp())
+    configdir = Path(tempfile.mkdtemp())
+    os.environ["ROADMAP_DM_CONFIG"] = str(configdir / "dm.json")
+
+    dm = DataManager(
+        root,
+        user_name="Frank Heinrich",
+        user_email="fheinrich@cmu.edu",
+        default_project="roadmap",
+        datalad_profile="text2git",
+    )
+    return dm, root
+
+
+def fresh_clone(gin_url: str) -> Path:
+    """
+    Clone the published root into a fresh temp dir and install subdatasets (repos only).
+    :param gin_url: (str) URL of the gin repo
+    :return: (Path) the root directory of the cloned repo
+    """
+    other_dir = Path(tempfile.mkdtemp()) / "clone"
+    other_dir.mkdir(parents=True, exist_ok=True)
+    dl.clone(source=gin_url, path=str(other_dir))
+    dl.get(dataset=str(other_dir), path=str(other_dir), recursive=True, get_data=False)
+    return other_dir
+
+
+def has_meta(ds: Path, *, rel_path: Path, node_type: str) -> bool:
     dds = Dataset(ds)
     dataset_id = dds.id
 
@@ -100,7 +122,7 @@ def _has_meta(ds: Path, *, rel_path: Path, node_type: str) -> bool:
     return False
 
 
-def _mk_temp_file(parent: Path, name: str, content: str = "x") -> Path:
+def mk_temp_file(parent: Path, name: str, content: str = "x") -> Path:
     parent.mkdir(parents=True, exist_ok=True)
     p = parent / name
     p.write_text(content)
@@ -122,16 +144,7 @@ class TestEnvironment(unittest.TestCase):
 @unittest.skipUnless(ENV_READY, "Environment check failed; see TestEnvironment.test_000_requirements_present")
 class DataManagerInitTreeTest(unittest.TestCase):
     def test_init_tree_end_to_end(self):
-        root_dir = tempfile.mkdtemp()
-        root = Path(root_dir)
-
-        dm = DataManager(
-            root,
-            user_name="Frank Heinrich",
-            user_email="fheinrich@cmu.edu",
-            default_project="roadmap",
-            datalad_profile="text2git",
-        )
+        dm, root = create_tmp_dm_instance()
 
         # run twice to assert idempotency
         dm.init_tree(project="roadmap", campaign="2025_summer", experiment="NR1_0")
@@ -149,25 +162,17 @@ class DataManagerInitTreeTest(unittest.TestCase):
         self.assertTrue((ep / ".datalad").exists())
 
         # meta present at each level
-        self.assertTrue(_has_meta(up, rel_path=Path(), node_type='user'))
-        self.assertTrue(_has_meta(pp, rel_path=Path(), node_type='project'))
-        self.assertTrue(_has_meta(cp, rel_path=Path(), node_type='campaign'))
-        self.assertTrue(_has_meta(ep, rel_path=Path(), node_type='experiment'))
+        self.assertTrue(has_meta(up, rel_path=Path(), node_type='user'))
+        self.assertTrue(has_meta(pp, rel_path=Path(), node_type='project'))
+        self.assertTrue(has_meta(cp, rel_path=Path(), node_type='campaign'))
+        self.assertTrue(has_meta(ep, rel_path=Path(), node_type='experiment'))
 
 
 @unittest.skipUnless(ENV_READY, "Environment check failed; see TestEnvironment.test_000_requirements_present")
 class DataManagerInstallIntoTreeTest(unittest.TestCase):
     def test_install_file_into_category_root(self):
         # Setup
-        root_dir = tempfile.mkdtemp()
-        root = Path(root_dir)
-        dm = DataManager(
-            root,
-            user_name="Frank Heinrich",
-            user_email="fheinrich@cmu.edu",
-            default_project="roadmap",
-            datalad_profile="text2git",
-        )
+        dm, root = create_tmp_dm_instance()
         dm.init_tree(project="roadmap", campaign="2025_summer", experiment="NR1_0")
 
         up = root
@@ -175,7 +180,7 @@ class DataManagerInstallIntoTreeTest(unittest.TestCase):
         cat = ep / "raw"
 
         # Source file
-        src = _mk_temp_file(root, "sample_raw.dat", "abc123")
+        src = mk_temp_file(root, "sample_raw.dat", "abc123")
 
         # Act: install into category root (no dest_rel)
         dm.install_into_tree(
@@ -195,18 +200,10 @@ class DataManagerInstallIntoTreeTest(unittest.TestCase):
 
         # Metadata written at experiment level, including filename in the name field
         dest = cat / src.name
-        self.assertTrue(_has_meta(ep, rel_path=dest.relative_to(ep), node_type="experiment"))
+        self.assertTrue(has_meta(ep, rel_path=dest.relative_to(ep), node_type="experiment"))
 
     def test_install_folder_recursively_as_subfolders(self):
-        root_dir = tempfile.mkdtemp()
-        root = Path(root_dir)
-        dm = DataManager(
-            root,
-            user_name="Frank Heinrich",
-            user_email="fheinrich@cmu.edu",
-            default_project="roadmap",
-            datalad_profile="text2git",
-        )
+        dm, root = create_tmp_dm_instance()
         dm.init_tree(project="roadmap", campaign="2025_summer", experiment="NR1_0")
 
         ep = root / "roadmap" / "2025_summer" / "NR1_0"
@@ -243,25 +240,17 @@ class DataManagerInstallIntoTreeTest(unittest.TestCase):
         self.assertTrue((deep / "b.txt").exists())
 
         # Metadata created on the top dataset for the folder
-        self.assertTrue(_has_meta(ep, rel_path=Path("analysis/bundleA"), node_type="experiment"))
+        self.assertTrue(has_meta(ep, rel_path=Path("analysis/bundleA"), node_type="experiment"))
 
     def test_install_into_existing_subdataset_with_dest_rel_file(self):
-        root_dir = tempfile.mkdtemp()
-        root = Path(root_dir)
-        dm = DataManager(
-            root,
-            user_name="Frank Heinrich",
-            user_email="fheinrich@cmu.edu",
-            default_project="roadmap",
-            datalad_profile="text2git",
-        )
+        dm, root = create_tmp_dm_instance()
         dm.init_tree(project="roadmap", campaign="2025_summer", experiment="NR1_0")
 
         ep = root / "roadmap" / "2025_summer" / "NR1_0"
         cat = ep / "analysis"
 
         # Ensure category dataset exists (e.g., by a no-op install of a tiny file)
-        priming_file = _mk_temp_file(root, "prime.txt", "p")
+        priming_file = mk_temp_file(root, "prime.txt", "p")
         dm.install_into_tree(
             source=priming_file,
             project="roadmap",
@@ -275,7 +264,7 @@ class DataManagerInstallIntoTreeTest(unittest.TestCase):
         target.mkdir()
 
         # Now install a file into that existing subdataset
-        src = _mk_temp_file(root, "result.csv", "x,y\n1,2\n")
+        src = mk_temp_file(root, "result.csv", "x,y\n1,2\n")
         dm.install_into_tree(
             source=src,
             project="roadmap",
@@ -289,22 +278,14 @@ class DataManagerInstallIntoTreeTest(unittest.TestCase):
         self.assertTrue((target / "result.csv").exists(), "file not placed into the dest_rel dataset")
 
         # Metadata added to the target dataset, includes filename
-        self.assertTrue(_has_meta(ep, rel_path=Path("analysis/run_001/result.csv"), node_type="experiment"))
+        self.assertTrue(has_meta(ep, rel_path=Path("analysis/run_001/result.csv"), node_type="experiment"))
 
     def test_install_into_missing_target_raises(self):
-        root_dir = tempfile.mkdtemp()
-        root = Path(root_dir)
-        dm = DataManager(
-            root,
-            user_name="Frank Heinrich",
-            user_email="fheinrich@cmu.edu",
-            default_project="roadmap",
-            datalad_profile="text2git",
-        )
+        dm, root = create_tmp_dm_instance()
         dm.init_tree(project="roadmap", campaign="2025_summer", experiment="NR1_0")
 
         # Build a source file at root
-        src = _mk_temp_file(root, "x.bin", "data")
+        src = mk_temp_file(root, "x.bin", "data")
 
         # Expect: dest_rel points to a non-existent dataset -> Should be created
         dm.install_into_tree(
@@ -352,14 +333,6 @@ class DataManagerPublishGINSiblingTest(unittest.TestCase):
         gin_urls.sort(key=lambda u: (not u.startswith("http"), u))
         return gin_urls[0]
 
-    def _fresh_clone(self, gin_url: str) -> Path:
-        """Clone the published root into a fresh temp dir and install subdatasets (repos only)."""
-        other_dir = Path(tempfile.mkdtemp()) / "clone"
-        other_dir.mkdir(parents=True, exist_ok=True)
-        dl.clone(source=gin_url, path=str(other_dir))
-        dl.get(dataset=str(other_dir), path=str(other_dir), recursive=True, get_data=False)
-        return other_dir
-
     def _gin_clone_url(self) -> str:
         sibs = dl.siblings(dataset=str(self.root), action="query", return_type="list")
         # prefer HTTPS URL for easy parsing
@@ -370,13 +343,7 @@ class DataManagerPublishGINSiblingTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         # Local dataset with one subdataset so recursion is exercised
-        cls.work = Path(tempfile.mkdtemp())
-        cls.root = cls.work / "scidata"
-        cls.dm = DataManager(
-            cls.root,
-            user_name="Frank Heinrich",
-            user_email="fheinrich@cmu.edu"
-        )
+        cls.dm, cls.root = create_tmp_dm_instance()
         cls.dm.init_tree(project="p", campaign="c", experiment="e")
 
         # Add a subdataset under the experiment
@@ -439,7 +406,7 @@ class DataManagerPublishGINSiblingTest(unittest.TestCase):
         self.dm.push_to_remotes(dataset=str(self.root), recursive=True, message="dm push_to_remotes")
 
         # Verify by cloning fresh and checking both commits and annex content
-        other = self._fresh_clone(gin_url)
+        other = fresh_clone(gin_url)
         self.assertTrue((other / "CHANGES.md").exists(), "Root commit did not reach GIN")
         # Annex file exists as pointer initially; fetch bytes:
         dl.get(dataset=str(other / "p" / "c" / "e" / "analysis"),
@@ -449,7 +416,7 @@ class DataManagerPublishGINSiblingTest(unittest.TestCase):
     def test_03_pull_from_gin(self):
         gin_url = self._ensure_published()
         # Second working copy simulates another computer
-        other = self._fresh_clone(gin_url)
+        other = fresh_clone(gin_url)
         dm_other = DataManager(other, user_name="Frank Heinrich", user_email="fheinrich@cmu.edu")
 
         # Change on original and push
@@ -471,7 +438,7 @@ class DataManagerPublishGINSiblingTest(unittest.TestCase):
 
     def test_04_get_data(self):
         gin_url = self._ensure_published()
-        other = self._fresh_clone(gin_url)
+        other = fresh_clone(gin_url)
         dm_other = DataManager(other, user_name="Frank Heinrich", user_email="fheinrich@cmu.edu")
 
         sub_other = other / "p" / "c" / "e" / "analysis"
@@ -488,7 +455,7 @@ class DataManagerPublishGINSiblingTest(unittest.TestCase):
 
     def test_05_drop_local(self):
         gin_url = self._ensure_published()
-        other = self._fresh_clone(gin_url)
+        other = fresh_clone(gin_url)
         dm_other = DataManager(other, user_name="Frank Heinrich", user_email="fheinrich@cmu.edu")
 
         sub_other = other / "p" / "c" / "e" / "analysis"
@@ -524,7 +491,7 @@ class DataManagerPublishGINSiblingTest(unittest.TestCase):
             owner_env = os.getenv("GIN_OWNER")
             try:
                 owner, repo = _parse_owner_repo_from_url(gin_url)
-            except Exception:
+            except RuntimeError:
                 if owner_env:
                     # fallback if parsing failed
                     _, repo = "", ""
@@ -543,9 +510,8 @@ class DataManagerPublishGINSiblingTest(unittest.TestCase):
         # If we created a GIN repo, try to remove it
         try:
             gin_url = self._gin_clone_url()
-        except Exception:
+        except RuntimeError:
             return  # no sibling, nothing to delete
         ok, msg = delete_gin_repo(gin_url)
         # It’s OK if deletion fails in CI; just log it, so you can fix creds
         print("[GIN CLEANUP]", msg)
-
