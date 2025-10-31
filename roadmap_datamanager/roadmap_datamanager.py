@@ -15,67 +15,27 @@ from typing import Optional, Dict, Any, Callable
 from datalad import api as dl
 from datalad.distribution.dataset import Dataset
 
-
-# ---------------------------- Config container ---------------------------- #
-@dataclass
-class DataManagerConfig:
-    # Required identity
-    user_name: str
-    user_email: str
-
-    # Optional identity/context
-    user_id: Optional[str] = None
-    organization: Optional[str] = None
-    lab_group: Optional[str] = None
-
-    # Defaults
-    default_project: Optional[str] = None
-    default_campaign: Optional[str] = None
-
-    # DataLad behavior
-    datalad_profile: Optional[str] = None
-
-    # MetaLad envelope defaults
-    extractor_name: str = "datamanager_v1"
-    extractor_version: str = "1.0"
-
-    # Runtime knobs
-    verbose: bool = True
-    env: Dict[str, str] = field(default_factory=dict)
-    register_existing: bool = True
-
-    # Clock (for tests)
-    now_fn: Callable[[], datetime] = lambda: datetime.now(timezone.utc)
-
-    # GIN repository
-    GIN_url: Optional[str] = None
-
-# --------------------------- Install policy --------------------------- #
+# ROADMAP datamanager modules
+from roadmap_datamanager import dm_config as dmc
 
 
+#  Install policy
 ALLOWED_CATEGORIES = [
     "raw", "reduced", "measurement", "analysis",
     "template", "experimental_optimization", "model",
 ]
 
-# -------------------------------- Manager -------------------------------- #
-
 
 class DataManager:
     """
-    Create (user)/(project)/(campaign) as nested DataLad datasets and attach JSON-LD
-    using MetaLad. Prefers DataLad's Python API; falls back to CLI for meta-add.
+    ROADMAP Data Manager class.
     """
-
     def __init__(
         self,
         root: os.PathLike | str,
         user_name: str,
         user_email: str,
         *,
-        user_id: Optional[str] = None,
-        organization: Optional[str] = None,
-        lab_group: Optional[str] = None,
         default_project: Optional[str] = None,
         default_campaign: Optional[str] = None,
         datalad_profile: Optional[str] = "text2git",
@@ -88,32 +48,46 @@ class DataManager:
         GIN_url: Optional[str] = None,
     ) -> None:
 
-        self.root: Path = Path(root).expanduser().resolve()
-        self.root.mkdir(parents=True, exist_ok=True)
+        # load persistent configuration
+        persisted = dmc.load_persistent_cfg()
 
-        self.cfg = DataManagerConfig(
-            user_name=user_name, user_email=user_email,
-            user_id=user_id, organization=organization, lab_group=lab_group,
-            default_project=default_project, default_campaign=default_campaign,
+        # compute effective values (= persisted ⟵ kwargs)
+        eff_root = root or persisted.get("dm_root", ".")
+        eff_user_name = user_name or persisted.get("user_name")
+        eff_user_email = user_email or persisted.get("user_email")
+        eff_default_project = default_project or persisted.get("default_project")
+        eff_default_campaign = default_campaign or persisted.get("default_campaign")
+        eff_GIN_url = GIN_url or persisted.get("GIN_url")
+
+        # build config
+        self.root = Path(eff_root).expanduser().resolve()
+        self.root.mkdir(parents=True, exist_ok=True)
+        self.cfg = dmc.DataManagerConfig(
+            dm_root=str(self.root),
+            user_name=eff_user_name,
+            user_email=eff_user_email,
+            default_project=eff_default_project,
+            default_campaign=eff_default_campaign,
             datalad_profile=datalad_profile,
-            extractor_name=extractor_name, extractor_version=extractor_version,
-            verbose=verbose, env=env or {},
+            extractor_name=extractor_name,
+            extractor_version=extractor_version,
+            verbose=verbose,
+            env=env or {},
             register_existing=register_existing,
             now_fn=now_fn,
-            GIN_url=GIN_url
+            GIN_url=eff_GIN_url,
         )
 
         if self.cfg.verbose:
             print(f"[DataManager] root={self.root}")
             print(f"[DataManager] user={self.cfg.user_name} <{self.cfg.user_email}>")
-            if self.cfg.organization or self.cfg.lab_group:
-                print(f"[DataManager] org={self.cfg.organization or '-'} lab={self.cfg.lab_group or '-'}")
             if self.cfg.default_project or self.cfg.default_campaign:
                 print(f"[DataManager] defaults: project={self.cfg.default_project} "
                       f"campaign={self.cfg.default_campaign}")
             print(f"[DataManager] profile={self.cfg.datalad_profile or '(none)'} ")
 
-    def _get_dataset_version(self, ds: Dataset) -> str:
+    @staticmethod
+    def _get_dataset_version(ds: Dataset) -> str:
         try:
             return ds.repo.get_hexsha()
         except IncompleteResultsError:
@@ -121,13 +95,6 @@ class DataManager:
             (Path(ds.path) / ".gitignore").touch(exist_ok=True)
             dl.save(dataset=str(ds.path), path=[str(Path(ds.path) / ".gitignore")], message="Initial commit (auto)")
             return ds.repo.get_hexsha()
-
-    def _proc_env(self) -> Dict[str, str]:
-        env = os.environ.copy()
-        env.update(self.cfg.env)
-        # Example: enforce non-interactive Git
-        env.setdefault("GIT_TERMINAL_PROMPT", "0")
-        return env
 
     def _ensure_dataset(self, path: Path, node_type, name, superds: Optional[Path]) -> None:
         """
@@ -173,6 +140,13 @@ class DataManager:
         if p.returncode == 0 and p.stdout.strip():
             return p.stdout.strip()
         raise RuntimeError(f"Could not read dataset id in {ds.path}")
+
+    def _proc_env(self) -> Dict[str, str]:
+        env = os.environ.copy()
+        env.update(self.cfg.env)
+        # Example: enforce non-interactive Git
+        env.setdefault("GIT_TERMINAL_PROMPT", "0")
+        return env
 
     def _ssh_to_https(self, u: str) -> str:
         # git@gin.g-node.org:/owner/repo(.git) -> https://gin.g-node.org/owner/repo
