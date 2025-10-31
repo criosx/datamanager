@@ -3,7 +3,7 @@ import json
 from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional, Dict, Any, Callable
+from typing import Optional, Dict, Callable
 
 try:
     from platformdirs import user_config_dir
@@ -61,7 +61,7 @@ def load_persistent_cfg() -> dict:
         return {}
     try:
         return json.loads(cfg_path.read_text())
-    except Exception:
+    except NotADirectoryError:
         return {}
 
 
@@ -69,4 +69,3 @@ def save_persistent_cfg(data: dict) -> None:
     cfg_path = default_config_path()
     cfg_path.parent.mkdir(parents=True, exist_ok=True)
     cfg_path.write_text(json.dumps(data, indent=2))
-
