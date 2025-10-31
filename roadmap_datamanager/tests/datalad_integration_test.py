@@ -129,7 +129,6 @@ class DataManagerInitTreeTest(unittest.TestCase):
             root,
             user_name="Frank Heinrich",
             user_email="fheinrich@cmu.edu",
-            organization="CMU / NCNR",
             default_project="roadmap",
             datalad_profile="text2git",
         )
@@ -166,7 +165,6 @@ class DataManagerInstallIntoTreeTest(unittest.TestCase):
             root,
             user_name="Frank Heinrich",
             user_email="fheinrich@cmu.edu",
-            organization="CMU / NCNR",
             default_project="roadmap",
             datalad_profile="text2git",
         )
@@ -206,7 +204,6 @@ class DataManagerInstallIntoTreeTest(unittest.TestCase):
             root,
             user_name="Frank Heinrich",
             user_email="fheinrich@cmu.edu",
-            organization="CMU / NCNR",
             default_project="roadmap",
             datalad_profile="text2git",
         )
@@ -255,7 +252,6 @@ class DataManagerInstallIntoTreeTest(unittest.TestCase):
             root,
             user_name="Frank Heinrich",
             user_email="fheinrich@cmu.edu",
-            organization="CMU / NCNR",
             default_project="roadmap",
             datalad_profile="text2git",
         )
@@ -302,7 +298,6 @@ class DataManagerInstallIntoTreeTest(unittest.TestCase):
             root,
             user_name="Frank Heinrich",
             user_email="fheinrich@cmu.edu",
-            organization="CMU / NCNR",
             default_project="roadmap",
             datalad_profile="text2git",
         )
@@ -553,6 +548,4 @@ class DataManagerPublishGINSiblingTest(unittest.TestCase):
         ok, msg = delete_gin_repo(gin_url)
         # It’s OK if deletion fails in CI; just log it, so you can fix creds
         print("[GIN CLEANUP]", msg)
-
-
 
