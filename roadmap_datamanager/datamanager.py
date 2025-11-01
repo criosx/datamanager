@@ -105,7 +105,7 @@ class DataManager:
         """
         persisted = dmc.load_persistent_cfg()
         if not persisted:
-            raise RuntimeError("No persistent configuration found — initialize once first.")
+            raise FileNotFoundError("No persistent configuration found — initialize once first.")
 
         return cls(
             root=persisted.get("dm_root"),
