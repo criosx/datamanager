@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QThreadPool, QObject, Signal, QRunnable, QDir
-from PySide6.QtGui import QStandardItemModel, QStandardItem, QAction
+from PySide6.QtGui import QStandardItemModel, QStandardItem, QAction, QColor
 from PySide6.QtWidgets import (
     QApplication, QDialog, QDialogButtonBox, QDockWidget, QFileDialog, QFileSystemModel, QFormLayout, QHBoxLayout,
     QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem,
@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (
 )
 
 # import your datamanager
-from roadmap_datamanager.datamanager import DataManager
+from roadmap_datamanager.datamanager import DataManager, ALLOWED_CATEGORIES
 
 
 class WorkerSignals(QObject):
@@ -74,6 +74,36 @@ class MainWindow(QMainWindow):
         # bootstrap DM
         self.bootstrap_datamanager()
 
+    @staticmethod
+    def _classify_dm_entry(path: Path) -> str:
+        """
+        Return one of:
+          - "dataset"         (directory that looks like a DataLad/Git dataset)
+          - "folder"          (directory, but not a dataset)
+          - "file-local"      (regular file OR symlink whose target exists)
+          - "file-remote"     (symlink whose target does NOT exist — typical dropped annex content)
+          - "other"
+        """
+        if path.is_dir():
+            # dataset?
+            if (path / ".datalad").exists() or (path / ".git").exists():
+                return "dataset"
+            return "folder"
+
+        # files / symlinks
+        if path.is_symlink():
+            # for annexed content: symlink may point to non-existing target (dropped)
+            target = path.resolve(strict=False)
+            if target.exists():
+                return "file-local"
+            else:
+                return "file-remote"
+
+        if path.is_file():
+            return "file-local"
+
+        return "other"
+
     def _create_menubar(self):
         menubar = self.menuBar()
 
@@ -88,39 +118,6 @@ class MainWindow(QMainWindow):
         # Add later:
         # file_menu.addSeparator()
         # file_menu.addAction("Exit", self.close)
-
-    def _dm_current_level(self):
-        """
-        Returns (level, parts)
-        level ∈ {"root", "project", "campaign", "experiment", "below-experiment"}
-        parts is a tuple/list of path parts *after* the dm root.
-        """
-        if self.dm is None or self.dm_current_path is None:
-            return "root", []
-        root = self.dm.root
-        cur = self.dm_current_path
-        rel = cur.relative_to(root)
-        if str(rel) == ".":
-            return "root", []
-        parts = list(rel.parts)
-        depth = len(parts)
-        if depth == 1:
-            return "project", parts
-        elif depth == 2:
-            return "campaign", parts
-        elif depth == 3:
-            return "experiment", parts
-        else:
-            return "below-experiment", parts
-
-    def _go_home(self):
-        home = QDir.homePath()
-        self.fs_tree.setRootIndex(self.fs_model.index(home))
-
-    def _choose_browser_root(self):
-        path = QFileDialog.getExistingDirectory(self, "Select folder to browse")
-        if path:
-            self.fs_tree.setRootIndex(self.fs_model.index(path))
 
     def _create_split_view(self):
         splitter = QSplitter()
@@ -169,8 +166,11 @@ class MainWindow(QMainWindow):
         act_home.triggered.connect(self._go_home)
         act_choose = QAction("Choose folder…", self)
         act_choose.triggered.connect(self._choose_browser_root)
+        act_install = QAction("Install into DM", self)
+        act_install.triggered.connect(self.install_selected_sources_into_dm)
         tb.addAction(act_home)
         tb.addAction(act_choose)
+        tb.addAction(act_install)
         fs_layout.addWidget(tb)
 
         self.fs_model = QFileSystemModel()
@@ -192,6 +192,39 @@ class MainWindow(QMainWindow):
         splitter.setStretchFactor(1, 1)
 
         self.setCentralWidget(splitter)
+
+    def _dm_current_level(self):
+        """
+        Returns (level, parts)
+        level ∈ {"root", "project", "campaign", "experiment", "below-experiment"}
+        parts = path parts after dm.root
+        """
+        if self.dm is None or self.dm_current_path is None:
+            return "root", []
+        root = self.dm.root
+        cur = self.dm_current_path
+        rel = cur.relative_to(root)
+        if str(rel) == ".":
+            return "root", []
+        parts = list(rel.parts)
+        depth = len(parts)
+        if depth == 1:
+            return "project", parts
+        elif depth == 2:
+            return "campaign", parts
+        elif depth == 3:
+            return "experiment", parts
+        else:
+            return "below-experiment", parts
+
+    def _go_home(self):
+        home = QDir.homePath()
+        self.fs_tree.setRootIndex(self.fs_model.index(home))
+
+    def _choose_browser_root(self):
+        path = QFileDialog.getExistingDirectory(self, "Select folder to browse")
+        if path:
+            self.fs_tree.setRootIndex(self.fs_model.index(path))
 
     def bootstrap_datamanager(self):
         """
@@ -284,7 +317,126 @@ class MainWindow(QMainWindow):
         # after creating, refresh the panel so the new item shows up
         self.refresh_dm_panel()
 
+    def install_selected_sources_into_dm(self):
+        """
+        Take the selected files/folders from the right file browser
+        and install them into the *current* DM location on the left.
+        """
+        if self.dm is None or self.dm_current_path is None:
+            QMessageBox.warning(self, "No datamanager", "Please select or create a datamanager first.")
+            return
+
+        # gather selected sources from the right file tree
+        indexes = self.fs_tree.selectedIndexes()
+        sources = []
+        for idx in indexes:
+            # column 0 only
+            if idx.column() != 0:
+                continue
+            path = self.fs_model.filePath(idx)
+            if path:
+                sources.append(path)
+
+        if not sources:
+            QMessageBox.information(self, "No files selected",
+                                    "Please select one or more files/folders in the right file browser first.")
+            return
+
+        # where are we in the DM?
+        level, parts = self._dm_current_level()
+
+        # install is only allowed at experiment and below
+        if level in ("root", "project", "campaign"):
+            QMessageBox.information(
+                self,
+                "Install not allowed here",
+                "You can only install files at the experiment level or below.\n"
+                "Please open a campaign → experiment → (optional) category first."
+            )
+            return
+
+        # ----- CASE 1: we are EXACTLY at experiment: root / proj / camp / exp
+        if level == "experiment":
+            # parts = [project, campaign, experiment]
+            project, campaign, experiment = parts
+
+            # ask user for category
+            category, ok = QInputDialog.getItem(
+                self,
+                "Select category",
+                f"Install into experiment “{experiment}” under which category?",
+                ALLOWED_CATEGORIES,
+                0,
+                False
+            )
+            if not ok:
+                return
+
+            for src in sources:
+                try:
+                    self.dm.install_into_tree(
+                        source=src,
+                        project=project,
+                        campaign=campaign,
+                        experiment=experiment,
+                        category=category,
+                        metadata={"installed_by_gui": True},
+                    )
+                except Exception as e:
+                    QMessageBox.critical(self, "Install failed", f"Could not install {src}:\n{e}")
+                    # continue with other files
+
+            # refresh left panel to show new folders
+            self.refresh_dm_panel()
+            self.status.showMessage("Installed into experiment.")
+
+            return
+
+        # ----- CASE 2: we are BELOW experiment:
+        # path looks like: root / proj / camp / exp / category / (maybe subdirs…)
+        if level == "below-experiment":
+            # we expect at least 4 parts: [project, campaign, experiment, category, ...]
+            if len(parts) < 4:
+                QMessageBox.critical(
+                    self,
+                    "Unexpected path",
+                    "This path is below experiment but I cannot determine project/campaign/experiment/category."
+                )
+                return
+
+            project = parts[0]
+            campaign = parts[1]
+            experiment = parts[2]
+            category = parts[3]
+            # anything deeper than category becomes dest_rel
+            if len(parts) > 4:
+                dest_rel = Path(*parts[4:])
+            else:
+                dest_rel = None
+
+            for src in sources:
+                try:
+                    self.dm.install_into_tree(
+                        source=src,
+                        project=project,
+                        campaign=campaign,
+                        experiment=experiment,
+                        category=category,
+                        dest_rel=dest_rel,
+                        metadata={"installed_by_gui": True},
+                    )
+                except Exception as e:
+                    QMessageBox.critical(self, "Install failed", f"Could not install {src}:\n{e}")
+                    # continue
+
+            self.refresh_dm_panel()
+            self.status.showMessage("Installed into subfolder of experiment.")
+
     def refresh_dm_panel(self):
+        """
+        Refresh the data manager panel.
+        :return: no return value
+        """
         if self.dm is None or self.dm_current_path is None:
             self.lbl_level.setText("Level: —")
             self.lbl_name.setText("Name: —")
@@ -306,12 +458,39 @@ class MainWindow(QMainWindow):
         self.btn_up.setEnabled(level != "root")
 
         # list children of current path
+        # list children of current path
         self.dm_list.clear()
         for child in self.dm_current_path.iterdir():
-            if not child.is_dir() or child.name.startswith("."):
+            # still skip dot dirs/files
+            if child.name.startswith("."):
                 continue
+
+            kind = self._classify_dm_entry(child)
+
             item = QListWidgetItem(child.name)
             item.setData(Qt.UserRole, str(child))
+
+            # color-code
+            if kind == "dataset":
+                item.setForeground(QColor("#1f6feb"))  # blue-ish
+                item.setToolTip("Dataset (DataLad/Git)")
+            elif kind == "folder":
+                item.setForeground(QColor("#237804"))  # green
+                item.setToolTip("Folder")
+            elif kind == "file-local":
+                item.setForeground(QColor("#237804"))  # black
+                item.setToolTip("Local file")
+            elif kind == "file-remote":
+                item.setForeground(QColor("#808080"))  # grey
+                item.setToolTip("Remotely available (annex), content not present")
+                # a little visual hint
+                font = item.font()
+                font.setItalic(True)
+                item.setFont(font)
+            else:
+                item.setForeground(QColor("#555555"))
+                item.setToolTip("Other")
+
             self.dm_list.addItem(item)
 
     def select_root(self, first_time: bool = False):
@@ -358,6 +537,11 @@ class MainWindow(QMainWindow):
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
+
+    # Force a stable, light theme regardless of OS setting
+    app.setStyle("Fusion")  # consistent cross-platform widget style
+    app.setPalette(app.style().standardPalette())  # the Fusion light palette
+
     w = MainWindow()
     w.resize(1100, 700)
     w.show()
