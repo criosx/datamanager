@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 
 from pathlib import Path
@@ -9,7 +10,7 @@ from PySide6.QtGui import QStandardItemModel, QStandardItem, QAction, QColor
 from PySide6.QtWidgets import (
     QApplication, QDialog, QDialogButtonBox, QDockWidget, QFileDialog, QFileSystemModel, QFormLayout, QHBoxLayout,
     QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem,
-    QMainWindow, QMessageBox, QPushButton, QTreeView, QSplitter, QStatusBar, QToolBar,
+    QMainWindow, QMessageBox, QPlainTextEdit, QPushButton, QTreeView, QSplitter, QStatusBar, QToolBar,
     QVBoxLayout, QWidget
 )
 
@@ -74,6 +75,11 @@ class MainWindow(QMainWindow):
         # bootstrap DM
         self.bootstrap_datamanager()
 
+    def _choose_browser_root(self):
+        path = QFileDialog.getExistingDirectory(self, "Select folder to browse")
+        if path:
+            self.fs_tree.setRootIndex(self.fs_model.index(path))
+
     @staticmethod
     def _classify_dm_entry(path: Path) -> str:
         """
@@ -123,40 +129,7 @@ class MainWindow(QMainWindow):
         splitter = QSplitter()
         splitter.setOrientation(Qt.Horizontal)
 
-        # ----- LEFT: datamanager panel -----
-        self.dm_panel = QWidget()
-        dm_layout = QVBoxLayout(self.dm_panel)
-        dm_layout.setContentsMargins(4, 4, 4, 4)
-
-        # top bar: show level + name
-        top_bar = QHBoxLayout()
-        self.lbl_level = QLabel("Level: —")
-        self.lbl_name = QLabel("Name: —")
-        top_bar.addWidget(self.lbl_level)
-        top_bar.addWidget(self.lbl_name)
-        top_bar.addStretch(1)
-        dm_layout.addLayout(top_bar)
-
-        # nav buttons
-        nav_bar = QHBoxLayout()
-        self.btn_up = QPushButton("↑ Up")
-        self.btn_open = QPushButton("Open")
-        self.btn_new_dataset = QPushButton("New dataset here…")
-        self.btn_up.clicked.connect(self.dm_go_up)
-        self.btn_open.clicked.connect(self.dm_open_selected)
-        self.btn_new_dataset.clicked.connect(self.dm_create_dataset_here)
-        nav_bar.addWidget(self.btn_up)
-        nav_bar.addWidget(self.btn_open)
-        nav_bar.addWidget(self.btn_new_dataset)
-        dm_layout.addLayout(nav_bar)
-
-        # list of children at current level
-        self.dm_list = QListWidget()
-        dm_layout.addWidget(self.dm_list, 1)
-
-        splitter.addWidget(self.dm_panel)
-
-        # ----- RIGHT: filesystem browser -----
+        # ----- Left: filesystem browser -----
         self.fs_panel = QWidget()
         fs_layout = QVBoxLayout(self.fs_panel)
         fs_layout.setContentsMargins(4, 4, 4, 4)
@@ -188,6 +161,62 @@ class MainWindow(QMainWindow):
 
         splitter.addWidget(self.fs_panel)
 
+        # ----- Center: datamanager panel -----
+        self.dm_panel = QWidget()
+        dm_layout = QVBoxLayout(self.dm_panel)
+        dm_layout.setContentsMargins(4, 4, 4, 4)
+
+        # top bar: show level + name
+        top_bar = QVBoxLayout()
+        self.lbl_root = QLabel("Root Dir: —")
+        self.lbl_project = QLabel("Project: —")
+        self.lbl_campaign = QLabel("Campaign: —")
+        self.lbl_experiment = QLabel("Experiment: —")
+        self.lbl_category = QLabel("Category: —")
+        top_bar.addWidget(self.lbl_root)
+        top_bar.addWidget(self.lbl_project)
+        top_bar.addWidget(self.lbl_campaign)
+        top_bar.addWidget(self.lbl_experiment)
+        top_bar.addWidget(self.lbl_category)
+        top_bar.addStretch(1)
+        dm_layout.addLayout(top_bar)
+
+        # nav buttons
+        nav_bar = QHBoxLayout()
+        self.btn_up = QPushButton("↑ Up")
+        self.btn_open = QPushButton("Open")
+        self.btn_new_dataset = QPushButton("New dataset here…")
+        self.btn_show_meta = QPushButton("Show metadata")
+        self.btn_up.clicked.connect(self.dm_go_up)
+        self.btn_open.clicked.connect(self.dm_open_selected)
+        self.btn_new_dataset.clicked.connect(self.dm_create_dataset_here)
+        self.btn_show_meta.clicked.connect(self.show_selected_metadata)
+        nav_bar.addWidget(self.btn_up)
+        nav_bar.addWidget(self.btn_open)
+        nav_bar.addWidget(self.btn_new_dataset)
+        nav_bar.addWidget(self.btn_show_meta)
+        dm_layout.addLayout(nav_bar)
+
+        # list of children at current level
+        self.dm_list = QListWidget()
+        self.dm_list.itemActivated.connect(self._dm_open_item)
+        self.dm_list.setEditTriggers(QListWidget.NoEditTriggers)
+        self.dm_list.setSelectionMode(QListWidget.SingleSelection)
+        dm_layout.addWidget(self.dm_list, 1)
+
+        splitter.addWidget(self.dm_panel)
+
+        # ----- RIGHT: Metadata viewer (NEW) -----
+        self.meta_panel = QWidget()
+        meta_layout = QVBoxLayout(self.meta_panel)
+        meta_layout.setContentsMargins(4, 4, 4, 4)
+        self.meta_title = QLabel("Metadata: —")
+        self.meta_view = QPlainTextEdit()
+        self.meta_view.setReadOnly(True)
+        meta_layout.addWidget(self.meta_title)
+        meta_layout.addWidget(self.meta_view, 1)
+        splitter.addWidget(self.meta_panel)
+
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
 
@@ -199,32 +228,71 @@ class MainWindow(QMainWindow):
         level ∈ {"root", "project", "campaign", "experiment", "below-experiment"}
         parts = path parts after dm.root
         """
+        pcec = ["Not set.", "", "", "", ""]
+        level = "root"
         if self.dm is None or self.dm_current_path is None:
-            return "root", []
+            return level, pcec
+
         root = self.dm.root
         cur = self.dm_current_path
         rel = cur.relative_to(root)
+        pcec[0] = str(root)
         if str(rel) == ".":
-            return "root", []
-        parts = list(rel.parts)
-        depth = len(parts)
-        if depth == 1:
-            return "project", parts
-        elif depth == 2:
-            return "campaign", parts
-        elif depth == 3:
-            return "experiment", parts
+            return level, pcec
+
+        level_list = ["project", "campaign", "experiment", "category"]
+        for i, part in enumerate(list(rel.parts)):
+            if i > 3:
+                # folders in categories are not reported here
+                break
+            pcec[i+1] = part
+            level = level_list[i]
+        return level, pcec
+
+    def _dm_open_item(self, item: QListWidgetItem):
+        path_str = item.data(Qt.UserRole)
+        if not path_str:
+            return
+        p = Path(path_str)
+        if p.is_dir():
+            self.dm_current_path = p
+            self.refresh_dm_panel()
+        # else: it's a file/symlink — ignore or handle later (open in Finder, fetch annex, etc.)
+
+    def _find_dataset_root_and_rel(self, path: Path) -> tuple[Path | None, Path | None]:
+        """
+        Walk up from `path` until we find a directory containing a dataset.
+        Returns (ds_root, relpath_within_dataset) or (None, None) if not found.
+        If `path` *is* the dataset root, relpath is Path('.').
+        """
+        p = path
+        if p.is_file() or p.is_symlink():
+            parent = p.parent
         else:
-            return "below-experiment", parts
+            parent = p
+
+        # climb up until DM root
+        dm_root = self.dm.root if self.dm else None
+        while True:
+            if p.is_dir() and self._is_dataset_dir(p):
+                ds_root = p
+                # rel path is relative to ds_root; for the dataset itself, use '.'
+                rel = Path(".") if path == ds_root else path.relative_to(ds_root)
+                return ds_root, rel
+            if dm_root and (p == dm_root or p == dm_root.parent):
+                break
+            if p.parent == p:
+                break
+            p = p.parent
+        return None, None
 
     def _go_home(self):
         home = QDir.homePath()
         self.fs_tree.setRootIndex(self.fs_model.index(home))
 
-    def _choose_browser_root(self):
-        path = QFileDialog.getExistingDirectory(self, "Select folder to browse")
-        if path:
-            self.fs_tree.setRootIndex(self.fs_model.index(path))
+    @staticmethod
+    def _is_dataset_dir(p: Path) -> bool:
+        return (p / ".datalad").exists() or (p / ".git").exists()
 
     def bootstrap_datamanager(self):
         """
@@ -277,7 +345,7 @@ class MainWindow(QMainWindow):
         level, parts = self._dm_current_level()
 
         # we don't create datasets below experiment in this GUI
-        if level in ("experiment", "below-experiment"):
+        if level in ("experiment", "category"):
             QMessageBox.information(
                 self,
                 "Not allowed here",
@@ -292,10 +360,10 @@ class MainWindow(QMainWindow):
             label = "Project name:"
         elif level == "project":
             title = "New campaign"
-            label = f"Campaign name for project “{parts[0]}”:"
+            label = f"Campaign name for project “{parts[1]}”:"
         else:  # level == "campaign"
             title = "New experiment"
-            label = f"Experiment name for {parts[0]} / {parts[1]}:"
+            label = f"Experiment name for {parts[1]} / {parts[2]}:"
 
         name, ok = QInputDialog.getText(self, title, label)
         if not ok or not name.strip():
@@ -308,10 +376,10 @@ class MainWindow(QMainWindow):
             self.dm.init_tree(project=name)
             # current view is root -> refresh
         elif level == "project":
-            project = parts[0]
+            project = parts[1]
             self.dm.init_tree(project=project, campaign=name)
         elif level == "campaign":
-            project, campaign = parts[0], parts[1]
+            project, campaign = parts[1], parts[2]
             self.dm.init_tree(project=project, campaign=campaign, experiment=name)
 
         # after creating, refresh the panel so the new item shows up
@@ -357,8 +425,8 @@ class MainWindow(QMainWindow):
 
         # ----- CASE 1: we are EXACTLY at experiment: root / proj / camp / exp
         if level == "experiment":
-            # parts = [project, campaign, experiment]
-            project, campaign, experiment = parts
+            # parts = [root_dir, project, campaign, experiment]
+            root_dir, project, campaign, experiment = parts
 
             # ask user for category
             category, ok = QInputDialog.getItem(
@@ -437,25 +505,23 @@ class MainWindow(QMainWindow):
         Refresh the data manager panel.
         :return: no return value
         """
+
+        level, parts = self._dm_current_level()
+        root, project, campaign, experiment, category = parts
+        root = root if len(root) <= 40 else "…" + root[-39:]
+        self.lbl_root.setText(f"Root: {root}")
+        self.lbl_project.setText(f'Project: {project}')
+        self.lbl_campaign.setText(f"Campaign: {campaign}")
+        self.lbl_experiment.setText(f'Experiment: {experiment}')
+        self.lbl_category.setText(f'Category: {category}')
+
         if self.dm is None or self.dm_current_path is None:
-            self.lbl_level.setText("Level: —")
-            self.lbl_name.setText("Name: —")
             self.dm_list.clear()
             return
 
-        level, parts = self._dm_current_level()
-
-        if level == "root":
-            name = self.dm.root.name
-        else:
-            name = parts[-1]
-
-        self.lbl_level.setText(f"Level: {level}")
-        self.lbl_name.setText(f'Name: "{name}"')
-
         # enable/disable “new dataset” by level
-        self.btn_new_dataset.setEnabled(level in ("root", "project", "campaign"))
-        self.btn_up.setEnabled(level != "root")
+        self.btn_new_dataset.setEnabled(experiment == "")
+        self.btn_up.setEnabled(project != "")
 
         # list children of current path
         # list children of current path
@@ -478,7 +544,7 @@ class MainWindow(QMainWindow):
                 item.setForeground(QColor("#237804"))  # green
                 item.setToolTip("Folder")
             elif kind == "file-local":
-                item.setForeground(QColor("#237804"))  # black
+                item.setForeground(QColor("#000000"))  # black
                 item.setToolTip("Local file")
             elif kind == "file-remote":
                 item.setForeground(QColor("#808080"))  # grey
@@ -526,6 +592,50 @@ class MainWindow(QMainWindow):
             f"Using datamanager at {self.dm.root} as {self.dm.cfg.user_name} <{self.dm.cfg.user_email}>"
         )
         self.refresh_dm_panel()
+
+    import json
+
+    def show_selected_metadata(self):
+        """
+        Fetch metadata via DataManager.load_meta() for the selected item in the DM list.
+        If nothing is selected, try the current DM path.
+        """
+        if self.dm is None or self.dm_current_path is None:
+            QMessageBox.information(self, "No datamanager", "Select or create a datamanager first.")
+            return
+
+        # target path: selected item in DM panel, else current DM dir
+        item = self.dm_list.currentItem()
+        target_path = Path(item.data(Qt.UserRole)) if item else self.dm_current_path
+
+        ds_root, rel = self._find_dataset_root_and_rel(target_path)
+        if ds_root is None:
+            self.meta_title.setText("Metadata: —")
+            self.meta_view.setPlainText("No enclosing dataset found for this selection.")
+            return
+
+        # Prepare args for load_meta()
+        rel_arg = None if rel == Path(".") else rel.as_posix()
+
+        try:
+            payload = self.dm.load_meta(ds_path=ds_root, path=rel_arg, return_='envelope', raise_on_missing=False)
+        except Exception as e:
+            self.meta_title.setText(f"Metadata: {target_path.name}")
+            self.meta_view.setPlainText(f"Error while reading metadata:\n{e}")
+            return
+
+        title_name = target_path.name if rel_arg else f"{ds_root.name} (dataset)"
+        self.meta_title.setText(f"Metadata: {title_name}")
+
+        if not payload:
+            self.meta_view.setPlainText("No metadata found for this selection.")
+            return
+
+        # pretty-print JSON-LD
+        try:
+            self.meta_view.setPlainText(json.dumps(payload, indent=2, ensure_ascii=False))
+        except Exception:
+            self.meta_view.setPlainText(str(payload))
 
     def sync_with_gin(self, recursive=True):
         if self.dm is None:

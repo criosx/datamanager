@@ -8,7 +8,7 @@ import subprocess
 from datalad.support.exceptions import IncompleteResultsError
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
-from typing import Optional, Dict, Any, Callable
+from typing import Optional, Dict, Any, Callable, List, Literal, Iterable
 
 # DataLad Python API
 from datalad import api as dl
@@ -171,6 +171,22 @@ class DataManager:
             return p.stdout.strip()
         raise RuntimeError(f"Could not read dataset id in {ds.path}")
 
+    @staticmethod
+    def _parse_iso(ts: str) -> datetime:
+        """
+        Lenient ISO parser: accept 'YYYY-MM-DDTHH:MM:SS' (no micros, no tz)
+        and '...Z' variants, but don't break if format is slightly different
+        :param ts: (str) time
+        :return: reformatted ISO datetime
+        """
+
+        try:
+            # Common case in your save_meta: .isoformat() without microseconds
+            return datetime.fromisoformat(ts.replace('Z', '+00:00'))
+        except ValueError:
+            # Fallback: be robust but keep ordering stable if unparsable
+            return datetime.min
+
     def _proc_env(self) -> Dict[str, str]:
         env = os.environ.copy()
         env.update(self.cfg.env)
@@ -273,6 +289,70 @@ class DataManager:
 
         return ep
 
+    def extract_meta(self, ds_path: str | Path, *, path: str | Path | None = None) -> List[Dict[str, Any]]:
+        """
+        Yield metadata envelopes from MetaLad for a dataset/file/folder already present in the DataLad tree, newest
+        first. Filters to this dataset's id, the given relpath, and the extractor_name
+        (default: self.cfg.extractor_name). Set include_nonmatching=True to see everything returned by meta_dump for
+        debugging.
+        :param ds_path: (str, os.PathLike) path to the dataset to iterate over
+        :param path: (str, os.PathLike) relative path to the dataset component to iterate over
+        :return: list of applicable metadata entries, newest first
+        """
+        def _match(env: Dict[str, Any], ds_path, relposix) -> bool:
+            meta = env.get("extracted_metadata", {})
+            rel = meta.get("extraction_parameter", {}).get("path")
+
+            if rel is None:
+                # Fallback: try to derive a relative path from the absolute env['path']
+                p = Path(env.get("path", ""))
+                if isinstance(p, Path) and p.is_absolute():
+                    try:
+                        rel = str(p.relative_to(ds_path))
+                    except Exception:
+                        return False
+                else:
+                    rel = str(p) if p else None
+
+            # Normalize: dataset itself is '.' (your code uses that convention)
+            if rel in (None, ""):
+                rel = "."
+
+            return rel == relposix
+
+        ds_path = Path(ds_path)
+        ds = Dataset(ds_path)
+        if not ds.is_installed():
+            raise RuntimeError(f"Dataset not installed at {ds_path}")
+
+        if path is None:
+            relposix = "."
+        else:
+            path = Path(path)
+            if path.is_absolute():
+                path = path.relative_to(ds_path)
+            relposix = '.' if path == Path() else str(PurePosixPath(*path.parts))
+
+        # Try to let meta_dump do some filtering; still filter in Python for safety.
+        try:
+            res: List[Dict[str, Any]] = dl.meta_dump(
+                dataset=str(ds_path),
+                # Some MetaLad versions accept 'path' for filtering; keep it if available.
+                path=relposix,
+                return_type='list',
+                result_renderer='disabled',
+            )
+        except IncompleteResultsError as e:
+            raise RuntimeError(f"meta-dump failed for {ds_path}: {e}") from e
+
+        # Filter & sort newest first by extraction_time
+        filtered = [env for env in res if _match(env, ds_path, relposix)]
+        filtered.sort(
+            key=lambda d: self._parse_iso(d.get('extraction_time', '')),
+            reverse=True
+        )
+        return filtered
+
     def install_into_tree(self, source: os.PathLike | str, *, project: Optional[str], campaign: Optional[str],
                           experiment: str, category: str, dest_rel: Optional[os.PathLike | str] = None,
                           rename: Optional[str] = None, move: bool = False, metadata: Optional[Dict[str, Any]]
@@ -352,6 +432,40 @@ class DataManager:
                                                          f"{project or ''}/{campaign or ''}/{experiment or ''}")
 
         return final_target
+
+    def load_meta(self, ds_path: str | Path, *, path: str | Path | None = None, extractor_name: Optional[str] = None,
+                  return_: Literal['payload', 'envelope'] = 'payload', raise_on_missing: bool = True) \
+            -> Optional[Dict[str, Any]]:
+        """
+        Return the latest metadata for `path` in `ds_path` produced by the configured extractor
+        (or the one you pass in).
+
+        :param ds_path: (str | Path) Dataset root
+        :param path: (str | Path | None) Relative path inside dataset; None or '' means the dataset itself
+        :param extractor_name: (Optional[str]) Filter to this extractor (default: self.cfg.extractor_name)
+        :param return_: {'payload','envelope'} 'payload' returns the JSON-LD object from 'extracted_metadata',
+        'envelope' returns the top-level envelope saved via meta_add
+        :param raise_on_missing: (bool) If True, raise when nothing is found; otherwise return None.
+        :return: (dict | None) metadata extracted from `ds_path`
+        """
+
+        meta = self.extract_meta(ds_path, path=path)
+
+        if meta is None or not meta:
+            if raise_on_missing:
+                if path is None:
+                    path = ''
+                raise LookupError(
+                    f"No metadata found in {ds_path} for '{path}'"
+                )
+            return None
+
+        if return_ == 'envelope':
+            return meta[0]
+        elif return_ == 'payload':
+            return meta[0].get('extracted_metadata') or {}
+        else:
+            raise ValueError("return_ must be 'payload' or 'envelope'")
 
     def publish_gin_sibling(self, *, sibling_name: str = "gin", repo_name: str = "datamanager", dataset=None,
                             access_protocol: str = "ssh", credential: Optional[str] = None, private: bool = False,

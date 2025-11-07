@@ -1,6 +1,6 @@
 from __future__ import annotations
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import shutil
 import subprocess
 import shlex
@@ -47,3 +47,4 @@ def ssh_to_https(u: str) -> str:
             path = path[:-4]
         return f"https://{host}/{path}"
     return u
+
