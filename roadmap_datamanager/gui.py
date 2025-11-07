@@ -8,14 +8,20 @@ from pathlib import Path
 from PySide6.QtCore import Qt, QThreadPool, QObject, Signal, QRunnable, QDir
 from PySide6.QtGui import QStandardItemModel, QStandardItem, QAction, QColor
 from PySide6.QtWidgets import (
-    QApplication, QDialog, QDialogButtonBox, QDockWidget, QFileDialog, QFileSystemModel, QFormLayout, QHBoxLayout,
-    QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem,
+    QApplication, QComboBox, QDialog, QDialogButtonBox, QDockWidget, QFileDialog, QFileSystemModel, QFormLayout,
+    QHBoxLayout, QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem,
     QMainWindow, QMessageBox, QPlainTextEdit, QPushButton, QTreeView, QSplitter, QStatusBar, QToolBar,
     QVBoxLayout, QWidget
 )
 
 # import your datamanager
 from roadmap_datamanager.datamanager import DataManager, ALLOWED_CATEGORIES
+
+METADATA_MANUAL_ADD_ITEMS = [
+    'condition',
+    'description',
+    'sample',
+]
 
 
 class WorkerSignals(QObject):
@@ -74,6 +80,11 @@ class MainWindow(QMainWindow):
 
         # bootstrap DM
         self.bootstrap_datamanager()
+
+        # state for current metadata context
+        self.meta_current_ds_root: Path | None = None
+        self.meta_current_rel: str | None = None  # posix path or None for dataset
+        self.meta_current_payload: dict | None = None  # extracted_metadata being edited
 
     def _choose_browser_root(self):
         path = QFileDialog.getExistingDirectory(self, "Select folder to browse")
@@ -206,7 +217,8 @@ class MainWindow(QMainWindow):
 
         splitter.addWidget(self.dm_panel)
 
-        # ----- RIGHT: Metadata viewer (NEW) -----
+        # ----- RIGHT: Metadata viewer -----
+        # viewer
         self.meta_panel = QWidget()
         meta_layout = QVBoxLayout(self.meta_panel)
         meta_layout.setContentsMargins(4, 4, 4, 4)
@@ -215,10 +227,29 @@ class MainWindow(QMainWindow):
         self.meta_view.setReadOnly(True)
         meta_layout.addWidget(self.meta_title)
         meta_layout.addWidget(self.meta_view, 1)
+
+        # editor row at bottom
+        editor_row = QHBoxLayout()
+        self.meta_key = QComboBox()
+        self.meta_key.setEditable(True)
+        self.meta_key.addItems(METADATA_MANUAL_ADD_ITEMS)
+        self.meta_value = QLineEdit()
+        self.meta_apply_btn = QPushButton("Add/Update")
+        self.meta_save_btn = QPushButton("Save to dataset")
+        self.meta_apply_btn.clicked.connect(self.apply_metadata_field)
+        self.meta_save_btn.clicked.connect(self.save_metadata_changes)
+        editor_row.addWidget(self.meta_key, 2)
+        editor_row.addWidget(self.meta_value, 4)
+        editor_row.addWidget(self.meta_apply_btn, 2)
+        editor_row.addWidget(self.meta_save_btn, 2)
+
+        meta_layout.addLayout(editor_row)
         splitter.addWidget(self.meta_panel)
 
-        splitter.setStretchFactor(0, 0)
-        splitter.setStretchFactor(1, 1)
+        # Give center & right more space
+        splitter.setStretchFactor(0, 1)  # FS
+        splitter.setStretchFactor(1, 2)  # DM
+        splitter.setStretchFactor(2, 2)  # Meta
 
         self.setCentralWidget(splitter)
 
@@ -265,14 +296,16 @@ class MainWindow(QMainWindow):
         Returns (ds_root, relpath_within_dataset) or (None, None) if not found.
         If `path` *is* the dataset root, relpath is Path('.').
         """
-        p = path
-        if p.is_file() or p.is_symlink():
-            parent = p.parent
-        else:
-            parent = p
+
+        if not path.exists():
+            return None, None
+
+        # if it's a file/symlink, start from parent when searching dataset root
+        search_from = path if path.is_dir() else path.parent
 
         # climb up until DM root
         dm_root = self.dm.root if self.dm else None
+        p = search_from
         while True:
             if p.is_dir() and self._is_dataset_dir(p):
                 ds_root = p
@@ -293,6 +326,30 @@ class MainWindow(QMainWindow):
     @staticmethod
     def _is_dataset_dir(p: Path) -> bool:
         return (p / ".datalad").exists() or (p / ".git").exists()
+
+    def apply_metadata_field(self):
+        """
+        Add or update a key in the in-memory metadata payload and refresh the viewer.
+        Does NOT write to disk yet.
+        """
+        if self.meta_current_ds_root is None:
+            QMessageBox.information(self, "No selection", "Select an item and click 'Show metadata' first.")
+            return
+
+        key = self.meta_key.currentText().strip()
+        value = self.meta_value.text().strip()
+        if not key:
+            return
+
+        if self.meta_current_payload is None:
+            self.meta_current_payload = {}
+
+        # simple flat update; nested keys can be handled later if needed
+        self.meta_current_payload[key] = value
+
+        # reflect changes in viewer immediately
+        self.meta_view.setPlainText(json.dumps(self.meta_current_payload, indent=2, ensure_ascii=False))
+        self.meta_value.clear()
 
     def bootstrap_datamanager(self):
         """
@@ -585,6 +642,44 @@ class MainWindow(QMainWindow):
                 return
         self.set_datamanager(dm)
 
+    def save_metadata_changes(self):
+        """
+        Persist the current in-memory metadata payload to the dataset using DataManager.save_meta().
+        Currently: writes a fresh metadata record for this (ds_root, rel) with the edited fields.
+        """
+        if self.dm is None:
+            QMessageBox.information(self, "No datamanager", "No active datamanager.")
+            return
+        if self.meta_current_ds_root is None:
+            QMessageBox.information(self, "No selection", "Nothing to save. Select an item and load metadata first.")
+            return
+        if self.meta_current_payload is None:
+            QMessageBox.information(self, "No changes", "No metadata to save.")
+            return
+
+        ds_root = self.meta_current_ds_root
+        rel = self.meta_current_rel  # None for dataset-level
+        extra = dict(self.meta_current_payload)
+
+        # optional: use 'name' from payload if present
+        name = extra.get("name")
+
+        try:
+            self.dm.save_meta(
+                ds_path=ds_root,
+                path=rel,
+                name=name,
+                extra=extra,
+                # node_type: keep default or infer later; default 'experiment' in your API is fine for now
+            )
+        except Exception as e:
+            QMessageBox.critical(self, "Save failed", f"Could not save metadata:\n{e}")
+            return
+
+        QMessageBox.information(self, "Metadata saved", "Metadata has been saved into the dataset.")
+        # reload to show canonical stored version
+        self.show_selected_metadata()
+
     def set_datamanager(self, dm: DataManager):
         self.dm = dm
         self.dm_current_path = dm.root  # start at root
@@ -604,7 +699,6 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "No datamanager", "Select or create a datamanager first.")
             return
 
-        # target path: selected item in DM panel, else current DM dir
         item = self.dm_list.currentItem()
         target_path = Path(item.data(Qt.UserRole)) if item else self.dm_current_path
 
@@ -612,30 +706,36 @@ class MainWindow(QMainWindow):
         if ds_root is None:
             self.meta_title.setText("Metadata: —")
             self.meta_view.setPlainText("No enclosing dataset found for this selection.")
+            self.meta_current_ds_root = None
+            self.meta_current_rel = None
+            self.meta_current_payload = None
             return
 
         # Prepare args for load_meta()
         rel_arg = None if rel == Path(".") else rel.as_posix()
 
         try:
-            payload = self.dm.load_meta(ds_path=ds_root, path=rel_arg, return_='envelope', raise_on_missing=False)
-        except Exception as e:
+            payload = self.dm.load_meta(ds_path=ds_root, path=rel_arg, return_='payload', raise_on_missing=False)
+        except ValueError as e:
             self.meta_title.setText(f"Metadata: {target_path.name}")
             self.meta_view.setPlainText(f"Error while reading metadata:\n{e}")
+            self.meta_current_ds_root = None
+            self.meta_current_rel = None
+            self.meta_current_payload = None
             return
+
+        self.meta_current_ds_root = ds_root
+        self.meta_current_rel = rel_arg
+        # if nothing yet, start from empty dict to allow adding
+        self.meta_current_payload = dict(payload) if payload else {}
 
         title_name = target_path.name if rel_arg else f"{ds_root.name} (dataset)"
         self.meta_title.setText(f"Metadata: {title_name}")
 
-        if not payload:
-            self.meta_view.setPlainText("No metadata found for this selection.")
-            return
-
-        # pretty-print JSON-LD
-        try:
-            self.meta_view.setPlainText(json.dumps(payload, indent=2, ensure_ascii=False))
-        except Exception:
-            self.meta_view.setPlainText(str(payload))
+        if self.meta_current_payload:
+            self.meta_view.setPlainText(json.dumps(self.meta_current_payload, indent=2, ensure_ascii=False))
+        else:
+            self.meta_view.setPlainText("No metadata found. You can add fields below.")
 
     def sync_with_gin(self, recursive=True):
         if self.dm is None:

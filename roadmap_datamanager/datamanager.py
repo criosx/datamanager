@@ -341,16 +341,14 @@ class DataManager:
                 path=relposix,
                 return_type='list',
                 result_renderer='disabled',
+                recursive=True
             )
         except IncompleteResultsError as e:
             raise RuntimeError(f"meta-dump failed for {ds_path}: {e}") from e
 
         # Filter & sort newest first by extraction_time
         filtered = [env for env in res if _match(env, ds_path, relposix)]
-        filtered.sort(
-            key=lambda d: self._parse_iso(d.get('extraction_time', '')),
-            reverse=True
-        )
+        filtered.sort(key=lambda d: self._parse_iso(d.get("metadata", {}).get("extraction_time", "")), reverse=True)
         return filtered
 
     def install_into_tree(self, source: os.PathLike | str, *, project: Optional[str], campaign: Optional[str],
@@ -463,7 +461,7 @@ class DataManager:
         if return_ == 'envelope':
             return meta[0]
         elif return_ == 'payload':
-            return meta[0].get('extracted_metadata') or {}
+            return meta[0].get("metadata", {}).get('extracted_metadata', {})
         else:
             raise ValueError("return_ must be 'payload' or 'envelope'")
 
