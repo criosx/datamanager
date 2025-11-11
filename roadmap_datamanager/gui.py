@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import json
+import logging
 import sys
 
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QThreadPool, QObject, Signal, QRunnable, QDir
+from PySide6.QtCore import Qt, QThreadPool, QObject, Signal, Slot, QRunnable, QDir
 from PySide6.QtGui import QStandardItemModel, QStandardItem, QAction, QColor
 from PySide6.QtWidgets import (
     QApplication, QComboBox, QDialog, QDialogButtonBox, QDockWidget, QFileDialog, QFileSystemModel, QFormLayout,
@@ -48,6 +49,19 @@ class FirstRunDialog(QDialog):
         return self.name_edit.text().strip(), self.email_edit.text().strip()
 
 
+class GuiLogHandler(logging.Handler, QObject):
+    # Same signal as EmittingStream
+    textWritten = Signal(str)
+
+    def __init__(self):
+        super().__init__()
+        QObject.__init__(self)
+
+    def emit(self, record):
+        msg = self.format(record)
+        self.textWritten.emit(msg + '\n')
+
+
 class Worker(QRunnable):
     def __init__(self, fn, *args, **kwargs):
         super().__init__()
@@ -62,6 +76,25 @@ class Worker(QRunnable):
             self.signals.done.emit(out)
         except Exception as e:
             self.signals.error.emit(str(e))
+
+
+class EmittingStream(QObject):
+    textWritten = Signal(str)
+
+    def write(self, text):
+        self.textWritten.emit(str(text))
+        # You can also write to the original stdout if you want to see it in the console as well
+        # sys.__stdout__.write(text)
+        self.flush()    # Ensure immediate output
+
+    def flush(self):
+        # Required for file-like objects, but can be empty for this use case
+        pass
+
+    # Add the missing isatty() method
+    def isatty(self):
+        """Returns False, as this is not a TTY device."""
+        return False
 
 
 class MainWindow(QMainWindow):
@@ -85,6 +118,25 @@ class MainWindow(QMainWindow):
         self.meta_current_ds_root: Path | None = None
         self.meta_current_rel: str | None = None  # posix path or None for dataset
         self.meta_current_payload: dict | None = None  # extracted_metadata being edited
+
+        # Redirect stdout
+        self.stdout_redirect = EmittingStream()
+        self.stdout_redirect.textWritten.connect(self.append_text)
+        sys.stdout = self.stdout_redirect
+        sys.stderr = self.stdout_redirect
+
+        # --- Redirect Logging to GUI ---
+        log_handler = GuiLogHandler()
+        log_handler.textWritten.connect(self.append_text)
+        # Set format (optional, matches standard log output)
+        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+        log_handler.setFormatter(formatter)
+
+        # Get the root logger and add our handler
+        root_logger = logging.getLogger()
+        root_logger.addHandler(log_handler)
+        # Set minimum logging level to capture (e.g., INFO, WARNING, DEBUG)
+        root_logger.setLevel(logging.INFO)
 
     def _choose_browser_root(self):
         path = QFileDialog.getExistingDirectory(self, "Select folder to browse")
@@ -253,10 +305,25 @@ class MainWindow(QMainWindow):
 
         self.setCentralWidget(splitter)
 
+        # Wrap splitter + log in a vertical layout
+        container = QWidget()
+        vbox = QVBoxLayout(container)
+        vbox.setContentsMargins(0, 0, 0, 0)
+        vbox.addWidget(splitter, 4)
+
+        # ----- LOG PANEL -----
+        self.log_view = QPlainTextEdit()
+        self.log_view.setReadOnly(True)
+        self.log_view.setMaximumHeight(160)
+        self.log_view.setPlaceholderText("Log output (DataLad, DataManager, errors) will appear here...")
+        vbox.addWidget(self.log_view, 1)
+
+        self.setCentralWidget(container)
+
     def _dm_current_level(self):
         """
         Returns (level, parts)
-        level ∈ {"root", "project", "campaign", "experiment", "below-experiment"}
+        level ∈ {"root", "project", "campaign", "experiment", "category"}
         parts = path parts after dm.root
         """
         pcec = ["Not set.", "", "", "", ""]
@@ -327,6 +394,12 @@ class MainWindow(QMainWindow):
     def _is_dataset_dir(p: Path) -> bool:
         return (p / ".datalad").exists() or (p / ".git").exists()
 
+    def append_text(self, text):
+        self.log_view.insertPlainText(text)
+        self.log_view.verticalScrollBar().setValue(
+            self.log_view.verticalScrollBar().maximum())  # Scroll to bottom
+
+    @Slot(str)
     def apply_metadata_field(self):
         """
         Add or update a key in the in-memory metadata payload and refresh the viewer.
@@ -469,6 +542,8 @@ class MainWindow(QMainWindow):
 
         # where are we in the DM?
         level, parts = self._dm_current_level()
+        # parts = [root_dir, project, campaign, experiment, category]
+        root_dir, project, campaign, experiment, category = parts
 
         # install is only allowed at experiment and below
         if level in ("root", "project", "campaign"):
@@ -482,9 +557,6 @@ class MainWindow(QMainWindow):
 
         # ----- CASE 1: we are EXACTLY at experiment: root / proj / camp / exp
         if level == "experiment":
-            # parts = [root_dir, project, campaign, experiment]
-            root_dir, project, campaign, experiment = parts
-
             # ask user for category
             category, ok = QInputDialog.getItem(
                 self,
@@ -509,38 +581,13 @@ class MainWindow(QMainWindow):
                     )
                 except Exception as e:
                     QMessageBox.critical(self, "Install failed", f"Could not install {src}:\n{e}")
-                    # continue with other files
 
-            # refresh left panel to show new folders
-            self.refresh_dm_panel()
-            self.status.showMessage("Installed into experiment.")
-
-            return
-
-        # ----- CASE 2: we are BELOW experiment:
-        # path looks like: root / proj / camp / exp / category / (maybe subdirs…)
-        if level == "below-experiment":
-            # we expect at least 4 parts: [project, campaign, experiment, category, ...]
-            if len(parts) < 4:
-                QMessageBox.critical(
-                    self,
-                    "Unexpected path",
-                    "This path is below experiment but I cannot determine project/campaign/experiment/category."
-                )
-                return
-
-            project = parts[0]
-            campaign = parts[1]
-            experiment = parts[2]
-            category = parts[3]
-            # anything deeper than category becomes dest_rel
-            if len(parts) > 4:
-                dest_rel = Path(*parts[4:])
-            else:
-                dest_rel = None
-
+        elif level == "category":
             for src in sources:
                 try:
+                    cat_path = Path(root_dir) / Path(project) / Path(campaign) / Path(experiment) / Path(category)
+                    dm_path = Path(self.dm_current_path)
+                    dest_rel = dm_path.relative_to(cat_path)
                     self.dm.install_into_tree(
                         source=src,
                         project=project,
@@ -554,8 +601,8 @@ class MainWindow(QMainWindow):
                     QMessageBox.critical(self, "Install failed", f"Could not install {src}:\n{e}")
                     # continue
 
-            self.refresh_dm_panel()
-            self.status.showMessage("Installed into subfolder of experiment.")
+        self.refresh_dm_panel()
+        self.status.showMessage("Installed into subfolder of experiment.")
 
     def refresh_dm_panel(self):
         """
