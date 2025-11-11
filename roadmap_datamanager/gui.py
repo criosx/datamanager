@@ -24,13 +24,6 @@ METADATA_MANUAL_ADD_ITEMS = [
     'sample',
 ]
 
-
-class WorkerSignals(QObject):
-    done = Signal(object)
-    error = Signal(str)
-    progress = Signal(str)
-
-
 class FirstRunDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -78,22 +71,27 @@ class Worker(QRunnable):
             self.signals.error.emit(str(e))
 
 
+class WorkerSignals(QObject):
+    done = Signal(object)
+    error = Signal(str)
+    progress = Signal(str)
+
+
 class EmittingStream(QObject):
     textWritten = Signal(str)
 
     def write(self, text):
         self.textWritten.emit(str(text))
-        # You can also write to the original stdout if you want to see it in the console as well
-        # sys.__stdout__.write(text)
+        # in addition, write to the original stdout to see console output
+        sys.__stdout__.write(text)
         self.flush()    # Ensure immediate output
 
     def flush(self):
         # Required for file-like objects, but can be empty for this use case
         pass
 
-    # Add the missing isatty() method
     def isatty(self):
-        """Returns False, as this is not a TTY device."""
+        # Returns False, as this is not a TTY device.
         return False
 
 
@@ -303,8 +301,6 @@ class MainWindow(QMainWindow):
         splitter.setStretchFactor(1, 2)  # DM
         splitter.setStretchFactor(2, 2)  # Meta
 
-        self.setCentralWidget(splitter)
-
         # Wrap splitter + log in a vertical layout
         container = QWidget()
         vbox = QVBoxLayout(container)
@@ -354,7 +350,7 @@ class MainWindow(QMainWindow):
         p = Path(path_str)
         if p.is_dir():
             self.dm_current_path = p
-            self.refresh_dm_panel()
+            self.dm_refresh_panel()
         # else: it's a file/symlink — ignore or handle later (open in Finder, fetch annex, etc.)
 
     def _find_dataset_root_and_rel(self, path: Path) -> tuple[Path | None, Path | None]:
@@ -393,6 +389,14 @@ class MainWindow(QMainWindow):
     @staticmethod
     def _is_dataset_dir(p: Path) -> bool:
         return (p / ".datalad").exists() or (p / ".git").exists()
+
+    def _run_in_worker(self, fn, *args, **kwargs):
+        worker = Worker(fn, *args, **kwargs)
+        # pipe worker error to log
+        worker.signals.error.connect(
+            lambda msg: self.append_text(f"[ERROR] {msg}\n")
+        )
+        self.pool.start(worker)
 
     def append_text(self, text):
         self.log_view.insertPlainText(text)
@@ -438,26 +442,6 @@ class MainWindow(QMainWindow):
             return
         else:
             self.set_datamanager(dm)
-
-    def dm_go_up(self):
-        if self.dm is None or self.dm_current_path is None:
-            return
-        if self.dm_current_path == self.dm.root:
-            return
-        self.dm_current_path = self.dm_current_path.parent
-        self.refresh_dm_panel()
-
-    def dm_open_selected(self):
-        item = self.dm_list.currentItem()
-        if not item:
-            return
-        path_str = item.data(Qt.UserRole)
-        if not path_str:
-            return
-        p = Path(path_str)
-        if p.is_dir():
-            self.dm_current_path = p
-            self.refresh_dm_panel()
 
     def dm_create_dataset_here(self):
         """
@@ -513,98 +497,29 @@ class MainWindow(QMainWindow):
             self.dm.init_tree(project=project, campaign=campaign, experiment=name)
 
         # after creating, refresh the panel so the new item shows up
-        self.refresh_dm_panel()
+        self.dm_refresh_panel()
 
-    def install_selected_sources_into_dm(self):
-        """
-        Take the selected files/folders from the right file browser
-        and install them into the *current* DM location on the left.
-        """
+    def dm_go_up(self):
         if self.dm is None or self.dm_current_path is None:
-            QMessageBox.warning(self, "No datamanager", "Please select or create a datamanager first.")
             return
-
-        # gather selected sources from the right file tree
-        indexes = self.fs_tree.selectedIndexes()
-        sources = []
-        for idx in indexes:
-            # column 0 only
-            if idx.column() != 0:
-                continue
-            path = self.fs_model.filePath(idx)
-            if path:
-                sources.append(path)
-
-        if not sources:
-            QMessageBox.information(self, "No files selected",
-                                    "Please select one or more files/folders in the right file browser first.")
+        if self.dm_current_path == self.dm.root:
             return
+        self.dm_current_path = self.dm_current_path.parent
+        self.dm_refresh_panel()
 
-        # where are we in the DM?
-        level, parts = self._dm_current_level()
-        # parts = [root_dir, project, campaign, experiment, category]
-        root_dir, project, campaign, experiment, category = parts
-
-        # install is only allowed at experiment and below
-        if level in ("root", "project", "campaign"):
-            QMessageBox.information(
-                self,
-                "Install not allowed here",
-                "You can only install files at the experiment level or below.\n"
-                "Please open a campaign → experiment → (optional) category first."
-            )
+    def dm_open_selected(self):
+        item = self.dm_list.currentItem()
+        if not item:
             return
+        path_str = item.data(Qt.UserRole)
+        if not path_str:
+            return
+        p = Path(path_str)
+        if p.is_dir():
+            self.dm_current_path = p
+            self.dm_refresh_panel()
 
-        # ----- CASE 1: we are EXACTLY at experiment: root / proj / camp / exp
-        if level == "experiment":
-            # ask user for category
-            category, ok = QInputDialog.getItem(
-                self,
-                "Select category",
-                f"Install into experiment “{experiment}” under which category?",
-                ALLOWED_CATEGORIES,
-                0,
-                False
-            )
-            if not ok:
-                return
-
-            for src in sources:
-                try:
-                    self.dm.install_into_tree(
-                        source=src,
-                        project=project,
-                        campaign=campaign,
-                        experiment=experiment,
-                        category=category,
-                        metadata={"installed_by_gui": True},
-                    )
-                except Exception as e:
-                    QMessageBox.critical(self, "Install failed", f"Could not install {src}:\n{e}")
-
-        elif level == "category":
-            for src in sources:
-                try:
-                    cat_path = Path(root_dir) / Path(project) / Path(campaign) / Path(experiment) / Path(category)
-                    dm_path = Path(self.dm_current_path)
-                    dest_rel = dm_path.relative_to(cat_path)
-                    self.dm.install_into_tree(
-                        source=src,
-                        project=project,
-                        campaign=campaign,
-                        experiment=experiment,
-                        category=category,
-                        dest_rel=dest_rel,
-                        metadata={"installed_by_gui": True},
-                    )
-                except Exception as e:
-                    QMessageBox.critical(self, "Install failed", f"Could not install {src}:\n{e}")
-                    # continue
-
-        self.refresh_dm_panel()
-        self.status.showMessage("Installed into subfolder of experiment.")
-
-    def refresh_dm_panel(self):
+    def dm_refresh_panel(self):
         """
         Refresh the data manager panel.
         :return: no return value
@@ -663,6 +578,97 @@ class MainWindow(QMainWindow):
 
             self.dm_list.addItem(item)
 
+    def install_selected_sources_into_dm(self):
+        """
+        Take the selected files/folders from the right file browser
+        and install them into the *current* DM location on the left.
+        """
+        if self.dm is None or self.dm_current_path is None:
+            QMessageBox.warning(self, "No datamanager", "Please select or create a datamanager first.")
+            return
+
+        # gather selected sources from the right file tree
+        indexes = self.fs_tree.selectedIndexes()
+        sources = []
+        for idx in indexes:
+            # column 0 only
+            if idx.column() != 0:
+                continue
+            path = self.fs_model.filePath(idx)
+            if path:
+                sources.append(path)
+
+        if not sources:
+            QMessageBox.information(self, "No files selected",
+                                    "Please select one or more files/folders in the right file browser first.")
+            return
+
+        # where are we in the DM?
+        level, parts = self._dm_current_level()
+        # parts = [root_dir, project, campaign, experiment, category]
+        root_dir, project, campaign, experiment, category = parts
+
+        # install is only allowed at experiment and below
+        if level in ("root", "project", "campaign"):
+            QMessageBox.information(
+                self,
+                "Install not allowed here",
+                "You can only install files at the experiment level or below.\n"
+                "Please open a campaign → experiment → (optional) category first."
+            )
+            return
+
+        # ----- CASE 1: we are EXACTLY at experiment: root / proj / camp / exp
+        if level == "experiment":
+            # ask user for category
+            category, ok = QInputDialog.getItem(
+                self,
+                "Select category",
+                f"Install into experiment “{experiment}” under which category?",
+                ALLOWED_CATEGORIES,
+                0,
+                False
+            )
+            if not ok:
+                return
+
+            for src in sources:
+                try:
+                    self._run_in_worker(
+                        self.dm.install_into_tree,
+                        source=src,
+                        project=project,
+                        campaign=campaign,
+                        experiment=experiment,
+                        category=category,
+                        metadata={"installed_by_gui": True},
+                    )
+                except Exception as e:
+                    QMessageBox.critical(self, "Install failed", f"Could not install {src}:\n{e}")
+
+        elif level == "category":
+            for src in sources:
+                try:
+                    cat_path = Path(root_dir) / Path(project) / Path(campaign) / Path(experiment) / Path(category)
+                    dm_path = Path(self.dm_current_path)
+                    dest_rel = dm_path.relative_to(cat_path)
+                    self._run_in_worker(
+                        self.dm.install_into_tree,
+                        source=src,
+                        project=project,
+                        campaign=campaign,
+                        experiment=experiment,
+                        category=category,
+                        dest_rel=dest_rel,
+                        metadata={"installed_by_gui": True},
+                    )
+                except Exception as e:
+                    QMessageBox.critical(self, "Install failed", f"Could not install {src}:\n{e}")
+                    # continue
+
+        self.dm_refresh_panel()
+        self.status.showMessage("Installed into subfolder of experiment.")
+
     def select_root(self, first_time: bool = False):
         """
         Select datamanager root to load
@@ -712,7 +718,8 @@ class MainWindow(QMainWindow):
         name = extra.get("name")
 
         try:
-            self.dm.save_meta(
+            self._run_in_worker(
+                self.dm.save_meta,
                 ds_path=ds_root,
                 path=rel,
                 name=name,
@@ -733,9 +740,7 @@ class MainWindow(QMainWindow):
         self.status.showMessage(
             f"Using datamanager at {self.dm.root} as {self.dm.cfg.user_name} <{self.dm.cfg.user_email}>"
         )
-        self.refresh_dm_panel()
-
-    import json
+        self.dm_refresh_panel()
 
     def show_selected_metadata(self):
         """
