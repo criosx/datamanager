@@ -7,22 +7,51 @@ import sys
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QThreadPool, QObject, Signal, Slot, QRunnable, QDir
-from PySide6.QtGui import QStandardItemModel, QStandardItem, QAction, QColor
+from PySide6.QtGui import QPalette, QAction, QColor
 from PySide6.QtWidgets import (
-    QApplication, QComboBox, QDialog, QDialogButtonBox, QDockWidget, QFileDialog, QFileSystemModel, QFormLayout,
-    QHBoxLayout, QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem,
-    QMainWindow, QMessageBox, QPlainTextEdit, QPushButton, QTreeView, QSplitter, QStatusBar, QToolBar,
+    QAbstractItemView, QApplication, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFileSystemModel,
+    QFormLayout, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem,
+    QMainWindow, QMenu, QMessageBox, QPlainTextEdit, QPushButton, QTreeView, QSplitter, QStatusBar, QToolBar,
     QVBoxLayout, QWidget
 )
 
-# import your datamanager
+# import datamanager
 from roadmap_datamanager.datamanager import DataManager, ALLOWED_CATEGORIES
+
+from remote import GinRemoteDialog
 
 METADATA_MANUAL_ADD_ITEMS = [
     'condition',
     'description',
     'sample',
 ]
+
+
+def create_light_palette():
+    p = QPalette()
+    p.setColor(QPalette.Window, QColor(240, 240, 240))
+    p.setColor(QPalette.WindowText, Qt.black)
+    p.setColor(QPalette.Base, QColor(255, 255, 255))
+    p.setColor(QPalette.AlternateBase, QColor(240, 240, 240))
+    p.setColor(QPalette.ToolTipBase, Qt.white)
+    p.setColor(QPalette.ToolTipText, Qt.black)
+    p.setColor(QPalette.Text, Qt.black)
+    p.setColor(QPalette.Button, QColor(240, 240, 240))
+    p.setColor(QPalette.ButtonText, Qt.black)
+    p.setColor(QPalette.BrightText, Qt.red)
+    p.setColor(QPalette.Link, QColor(42, 130, 218))
+    p.setColor(QPalette.Highlight, QColor(42, 130, 218))
+    p.setColor(QPalette.HighlightedText, Qt.white)
+
+    # --- inactive buttons ---
+    p.setColor(QPalette.Inactive, QPalette.Button, QColor(230, 230, 230))
+    p.setColor(QPalette.Inactive, QPalette.ButtonText, QColor(80, 80, 80))
+
+    # --- disabled buttons ---
+    p.setColor(QPalette.Disabled, QPalette.Button, QColor(230, 230, 230))
+    p.setColor(QPalette.Disabled, QPalette.ButtonText, QColor(150, 150, 150))
+    return p
+
 
 class FirstRunDialog(QDialog):
     def __init__(self, parent=None):
@@ -90,7 +119,8 @@ class EmittingStream(QObject):
         # Required for file-like objects, but can be empty for this use case
         pass
 
-    def isatty(self):
+    @staticmethod
+    def isatty():
         # Returns False, as this is not a TTY device.
         return False
 
@@ -119,13 +149,13 @@ class MainWindow(QMainWindow):
 
         # Redirect stdout
         self.stdout_redirect = EmittingStream()
-        self.stdout_redirect.textWritten.connect(self.append_text)
+        self.stdout_redirect.textWritten.connect(self.logviewer_append_text)
         sys.stdout = self.stdout_redirect
         sys.stderr = self.stdout_redirect
 
         # --- Redirect Logging to GUI ---
         log_handler = GuiLogHandler()
-        log_handler.textWritten.connect(self.append_text)
+        log_handler.textWritten.connect(self.logviewer_append_text)
         # Set format (optional, matches standard log output)
         formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
         log_handler.setFormatter(formatter)
@@ -141,50 +171,32 @@ class MainWindow(QMainWindow):
         if path:
             self.fs_tree.setRootIndex(self.fs_model.index(path))
 
-    @staticmethod
-    def _classify_dm_entry(path: Path) -> str:
-        """
-        Return one of:
-          - "dataset"         (directory that looks like a DataLad/Git dataset)
-          - "folder"          (directory, but not a dataset)
-          - "file-local"      (regular file OR symlink whose target exists)
-          - "file-remote"     (symlink whose target does NOT exist — typical dropped annex content)
-          - "other"
-        """
-        if path.is_dir():
-            # dataset?
-            if (path / ".datalad").exists() or (path / ".git").exists():
-                return "dataset"
-            return "folder"
-
-        # files / symlinks
-        if path.is_symlink():
-            # for annexed content: symlink may point to non-existing target (dropped)
-            target = path.resolve(strict=False)
-            if target.exists():
-                return "file-local"
-            else:
-                return "file-remote"
-
-        if path.is_file():
-            return "file-local"
-
-        return "other"
-
     def _create_menubar(self):
         menubar = self.menuBar()
 
         # File menu
         file_menu = menubar.addMenu("&File")
 
-        # Select root action
-        act_select_root = QAction("Select datamanager root…", self)
+        act_select_root = QAction("Select datamanager root...", self)
         act_select_root.triggered.connect(self.select_root)
         file_menu.addAction(act_select_root)
 
-        # Add later:
-        # file_menu.addSeparator()
-        # file_menu.addAction("Exit", self.close)
+        file_menu.addSeparator()
+        act_close = QAction("&Close", self)
+        act_close.triggered.connect(self.close)
+        file_menu.addAction(act_close)
+
+        remote_menu = menubar.addMenu("&Remote")
+
+        act_select_remote = QAction("Select datamanager remote...", self)
+        act_select_remote.triggered.connect(self.select_remote)
+        remote_menu.addAction(act_select_remote)
+
+        act_clone_from_GIN = QAction("Clone from GIN into empty", self)
+        act_clone_from_GIN.triggered.connect(self.clone_from_gin)
+        remote_menu.addAction(act_clone_from_GIN)
+
+
 
     def _create_split_view(self):
         splitter = QSplitter()
@@ -201,7 +213,7 @@ class MainWindow(QMainWindow):
         act_choose = QAction("Choose folder…", self)
         act_choose.triggered.connect(self._choose_browser_root)
         act_install = QAction("Install into DM", self)
-        act_install.triggered.connect(self.install_selected_sources_into_dm)
+        act_install.triggered.connect(self.fileviewer_install_selected_sources_into_dm)
         tb.addAction(act_home)
         tb.addAction(act_choose)
         tb.addAction(act_install)
@@ -245,15 +257,15 @@ class MainWindow(QMainWindow):
         # nav buttons
         nav_bar = QHBoxLayout()
         self.btn_up = QPushButton("↑ Up")
-        self.btn_open = QPushButton("Open")
+        self.btn_refresh = QPushButton("Refresh")
         self.btn_new_dataset = QPushButton("New dataset here…")
         self.btn_show_meta = QPushButton("Show metadata")
         self.btn_up.clicked.connect(self.dm_go_up)
-        self.btn_open.clicked.connect(self.dm_open_selected)
+        self.btn_refresh.clicked.connect(self.dm_refresh_panel)
         self.btn_new_dataset.clicked.connect(self.dm_create_dataset_here)
-        self.btn_show_meta.clicked.connect(self.show_selected_metadata)
+        self.btn_show_meta.clicked.connect(self.dm_show_selected_metadata)
         nav_bar.addWidget(self.btn_up)
-        nav_bar.addWidget(self.btn_open)
+        nav_bar.addWidget(self.btn_refresh)
         nav_bar.addWidget(self.btn_new_dataset)
         nav_bar.addWidget(self.btn_show_meta)
         dm_layout.addLayout(nav_bar)
@@ -262,7 +274,9 @@ class MainWindow(QMainWindow):
         self.dm_list = QListWidget()
         self.dm_list.itemActivated.connect(self._dm_open_item)
         self.dm_list.setEditTriggers(QListWidget.NoEditTriggers)
-        self.dm_list.setSelectionMode(QListWidget.SingleSelection)
+        self.dm_list.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.dm_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.dm_list.customContextMenuRequested.connect(self._dm_show_context_menu)
         dm_layout.addWidget(self.dm_list, 1)
 
         splitter.addWidget(self.dm_panel)
@@ -287,7 +301,7 @@ class MainWindow(QMainWindow):
         self.meta_apply_btn = QPushButton("Add/Update")
         self.meta_save_btn = QPushButton("Save to dataset")
         self.meta_apply_btn.clicked.connect(self.apply_metadata_field)
-        self.meta_save_btn.clicked.connect(self.save_metadata_changes)
+        self.meta_save_btn.clicked.connect(self.metadata_save_changes)
         editor_row.addWidget(self.meta_key, 2)
         editor_row.addWidget(self.meta_value, 4)
         editor_row.addWidget(self.meta_apply_btn, 2)
@@ -297,7 +311,7 @@ class MainWindow(QMainWindow):
         splitter.addWidget(self.meta_panel)
 
         # Give center & right more space
-        splitter.setStretchFactor(0, 1)  # FS
+        splitter.setStretchFactor(0, 2)  # FS
         splitter.setStretchFactor(1, 2)  # DM
         splitter.setStretchFactor(2, 2)  # Meta
 
@@ -311,10 +325,41 @@ class MainWindow(QMainWindow):
         self.log_view = QPlainTextEdit()
         self.log_view.setReadOnly(True)
         self.log_view.setMaximumHeight(160)
+        self.log_view.setMaximumBlockCount(1000)
         self.log_view.setPlaceholderText("Log output (DataLad, DataManager, errors) will appear here...")
         vbox.addWidget(self.log_view, 1)
 
         self.setCentralWidget(container)
+
+    @staticmethod
+    def _dm_classify_entry(path: Path) -> str:
+        """
+        Return one of:
+          - "dataset"         (directory that looks like a DataLad/Git dataset)
+          - "folder"          (directory, but not a dataset)
+          - "file-local"      (regular file OR symlink whose target exists)
+          - "file-remote"     (symlink whose target does NOT exist — typical dropped annex content)
+          - "other"
+        """
+        if path.is_dir():
+            # dataset?
+            if (path / ".datalad").exists() or (path / ".git").exists():
+                return "dataset"
+            return "folder"
+
+        # files / symlinks
+        if path.is_symlink():
+            # for annexed content: symlink may point to non-existing target (dropped)
+            target = path.resolve(strict=False)
+            if target.exists():
+                return "file-local"
+            else:
+                return "file-remote"
+
+        if path.is_file():
+            return "file-local"
+
+        return "other"
 
     def _dm_current_level(self):
         """
@@ -353,6 +398,29 @@ class MainWindow(QMainWindow):
             self.dm_refresh_panel()
         # else: it's a file/symlink — ignore or handle later (open in Finder, fetch annex, etc.)
 
+    def _dm_show_context_menu(self, pos):
+        items = self.dm_list.selectedItems()
+        if not items:
+            return
+
+        menu = QMenu(self)
+        act_open = menu.addAction("Open")
+        remove_menu = QMenu("Remove", self)
+        act_drop = remove_menu.addAction("Drop content (annex)")
+        act_remove = remove_menu.addAction("Remove content (safely)")
+        act_remove_reckless = remove_menu.addAction("Remove content (reckless)")
+        menu.addMenu(remove_menu)
+
+        action = menu.exec(self.dm_list.mapToGlobal(pos))
+        if action == act_open:
+            self.dm_open_selected()
+        elif action == act_drop:
+            self.dm_drop_selected()
+        elif action == act_remove:
+            self.dm_remove_selected()
+        elif action == act_remove_reckless:
+            self.dm_remove_selected(reckless=True)
+
     def _find_dataset_root_and_rel(self, path: Path) -> tuple[Path | None, Path | None]:
         """
         Walk up from `path` until we find a directory containing a dataset.
@@ -373,7 +441,7 @@ class MainWindow(QMainWindow):
             if p.is_dir() and self._is_dataset_dir(p):
                 ds_root = p
                 # rel path is relative to ds_root; for the dataset itself, use '.'
-                rel = Path(".") if path == ds_root else path.relative_to(ds_root)
+                rel = Path("../roadmap_datamanager") if path == ds_root else path.relative_to(ds_root)
                 return ds_root, rel
             if dm_root and (p == dm_root or p == dm_root.parent):
                 break
@@ -394,14 +462,17 @@ class MainWindow(QMainWindow):
         worker = Worker(fn, *args, **kwargs)
         # pipe worker error to log
         worker.signals.error.connect(
-            lambda msg: self.append_text(f"[ERROR] {msg}\n")
+            lambda msg: self.logviewer_append_text(f"[ERROR] {msg}\n")
         )
         self.pool.start(worker)
 
-    def append_text(self, text):
-        self.log_view.insertPlainText(text)
-        self.log_view.verticalScrollBar().setValue(
-            self.log_view.verticalScrollBar().maximum())  # Scroll to bottom
+    def _selected_dm_paths(self) -> list[Path]:
+        paths: list[Path] = []
+        for item in self.dm_list.selectedItems():
+            path_str = item.data(Qt.UserRole)
+            if path_str:
+                paths.append(Path(path_str))
+        return paths
 
     @Slot(str)
     def apply_metadata_field(self):
@@ -442,6 +513,17 @@ class MainWindow(QMainWindow):
             return
         else:
             self.set_datamanager(dm)
+
+    def clone_from_gin(self):
+        """
+        Clones the GIN superdataset into an empty datamanager directory
+        :return: no return value
+        """
+        self._run_in_worker(
+            self.dm.clone_from_gin,
+            dest=self.dm_current_path,
+            source_url=self.dm.cfg.GIN_url
+        )
 
     def dm_create_dataset_here(self):
         """
@@ -499,6 +581,33 @@ class MainWindow(QMainWindow):
         # after creating, refresh the panel so the new item shows up
         self.dm_refresh_panel()
 
+    def dm_drop_selected(self):
+        if self.dm is None:
+            return
+        paths = self._selected_dm_paths()
+        if not paths:
+            return
+
+        for p in paths:
+            ds_root, rel = self._find_dataset_root_and_rel(p)
+            if ds_root is None or rel is None:
+                continue
+            rel_str = "." if rel == Path("../roadmap_datamanager") else rel.as_posix()
+
+            try:
+                self._run_in_worker(
+                    self.dm.drop_local,
+                    dataset=str(ds_root),
+                    path=rel_str,
+                    what="filecontent",
+                    recursive=False
+                )
+                self.logviewer_append_text(f"[INFO] Dropped content: {p}\n")
+            except Exception as e:
+                self.logviewer_append_text(f"[WARN] Could not drop {p}: {e}\n")
+
+        self.dm_refresh_panel()
+
     def dm_go_up(self):
         if self.dm is None or self.dm_current_path is None:
             return
@@ -524,7 +633,6 @@ class MainWindow(QMainWindow):
         Refresh the data manager panel.
         :return: no return value
         """
-
         level, parts = self._dm_current_level()
         root, project, campaign, experiment, category = parts
         root = root if len(root) <= 40 else "…" + root[-39:]
@@ -550,7 +658,7 @@ class MainWindow(QMainWindow):
             if child.name.startswith("."):
                 continue
 
-            kind = self._classify_dm_entry(child)
+            kind = self._dm_classify_entry(child)
 
             item = QListWidgetItem(child.name)
             item.setData(Qt.UserRole, str(child))
@@ -578,7 +686,104 @@ class MainWindow(QMainWindow):
 
             self.dm_list.addItem(item)
 
-    def install_selected_sources_into_dm(self):
+    def dm_show_selected_metadata(self):
+        """
+        Fetch metadata via DataManager.load_meta() for the selected item in the DM list.
+        If nothing is selected, try the current DM path.
+        """
+        if self.dm is None or self.dm_current_path is None:
+            QMessageBox.information(self, "No datamanager", "Select or create a datamanager first.")
+            return
+
+        item = self.dm_list.currentItem()
+        target_path = Path(item.data(Qt.UserRole)) if item else self.dm_current_path
+
+        ds_root, rel = self._find_dataset_root_and_rel(target_path)
+        if ds_root is None:
+            self.meta_title.setText("Metadata: —")
+            self.meta_view.setPlainText("No enclosing dataset found for this selection.")
+            self.meta_current_ds_root = None
+            self.meta_current_rel = None
+            self.meta_current_payload = None
+            return
+
+        # Prepare args for load_meta()
+        rel_arg = None if rel == Path("../roadmap_datamanager") else rel.as_posix()
+
+        try:
+            payload = self.dm.load_meta(ds_path=ds_root, path=rel_arg, return_='payload', raise_on_missing=False)
+        except ValueError as e:
+            self.meta_title.setText(f"Metadata: {target_path.name}")
+            self.meta_view.setPlainText(f"Error while reading metadata:\n{e}")
+            self.meta_current_ds_root = None
+            self.meta_current_rel = None
+            self.meta_current_payload = None
+            return
+
+        self.meta_current_ds_root = ds_root
+        self.meta_current_rel = rel_arg
+        # if nothing yet, start from empty dict to allow adding
+        self.meta_current_payload = dict(payload) if payload else {}
+
+        title_name = target_path.name if rel_arg else f"{ds_root.name} (dataset)"
+        self.meta_title.setText(f"Metadata: {title_name}")
+
+        if self.meta_current_payload:
+            self.meta_view.setPlainText(json.dumps(self.meta_current_payload, indent=2, ensure_ascii=False))
+        else:
+            self.meta_view.setPlainText("No metadata found. You can add fields below.")
+
+    def dm_remove_selected(self, reckless=False):
+        if self.dm is None:
+            return
+        paths = self._selected_dm_paths()
+        if not paths:
+            return
+
+        # confirmation
+        names = "\n".join(str(p) for p in paths)
+        if not reckless:
+            ret = QMessageBox.question(
+                self,
+                "Remove content",
+                f"Remove the following content safely from the hierarchy? "
+                f"Check that a remote copy exist. \n\n{names}",
+                QMessageBox.Yes | QMessageBox.No
+            )
+            reckless_flag = None
+        else:
+            ret = QMessageBox.question(
+                self,
+                "Remove content",
+                f"Remove the following dataset(s) or content from the hierarchy?\n\n{names}",
+                QMessageBox.Yes | QMessageBox.No
+            )
+            reckless_flag = "kill"
+
+        if ret != QMessageBox.Yes:
+            return
+
+        for p in paths:
+            ds_root, rel = self._find_dataset_root_and_rel(p)
+            if ds_root is None or rel is None:
+                continue
+            rel_str = None if rel == Path("../roadmap_datamanager") else rel.as_posix()
+
+            try:
+                self._run_in_worker(
+                    self.dm.remove_from_tree,
+                    dataset=str(ds_root),
+                    path=rel_str,
+                    recursive=True,
+                    reckless=reckless_flag
+                )
+                self.logviewer_append_text(f"[INFO] Removed dataset: {p}\n")
+            except Exception as e:
+                self.logviewer_append_text(f"[WARN] Could not remove {p}: {e}\n")
+
+        self.dm_refresh_panel()
+
+    def fileviewer_install_selected_sources_into_dm(self):
         """
         Take the selected files/folders from the right file browser
         and install them into the *current* DM location on the left.
@@ -669,6 +874,47 @@ class MainWindow(QMainWindow):
         self.dm_refresh_panel()
         self.status.showMessage("Installed into subfolder of experiment.")
 
+    def logviewer_append_text(self, text):
+        self.log_view.insertPlainText(text)
+        self.log_view.verticalScrollBar().setValue(
+            self.log_view.verticalScrollBar().maximum())  # Scroll to bottom
+
+    def select_remote(self):
+        default_user = "fhein"
+        default_repo = "datamanager"
+        default_protocol = "SSH"
+
+        # If we already have a URL, you can parse it to prefill:
+        try:
+            current = getattr(self.dm.cfg, "GIN_url", "") if self.dm else ""
+            # naive parse:
+            # git@gin.g-node.org:user/repo.git  OR  https://gin.g-node.org/user/repo.git
+            if current:
+                if current.startswith("git@"):
+                    default_protocol = "SSH"
+                    tail = current.split(":", 1)[1]
+                elif current.startswith("https://"):
+                    default_protocol = "HTTPS"
+                    tail = current.split("gin.g-node.org/", 1)[1]
+                else:
+                    tail = ""
+                if tail:
+                    parts = tail.rstrip(".git").split("/", 1)
+                    if len(parts) == 2:
+                        default_user, default_repo = parts
+        except Exception:
+            pass
+
+        dlg = GinRemoteDialog(self, default_user=default_user, default_repo=default_repo,
+                              default_protocol=default_protocol)
+        if dlg.exec() == QDialog.Accepted:
+            url = dlg.url()
+            # Store to config
+            if self.dm is not None:
+                setattr(self.dm.cfg, "GIN_url", url)
+                self.dm.save_current_dm_configuration()
+            self.status.showMessage(f"GIN remote set to: {url}", 5000)
+
     def select_root(self, first_time: bool = False):
         """
         Select datamanager root to load
@@ -695,7 +941,7 @@ class MainWindow(QMainWindow):
                 return
         self.set_datamanager(dm)
 
-    def save_metadata_changes(self):
+    def metadata_save_changes(self):
         """
         Persist the current in-memory metadata payload to the dataset using DataManager.save_meta().
         Currently: writes a fresh metadata record for this (ds_root, rel) with the edited fields.
@@ -732,7 +978,7 @@ class MainWindow(QMainWindow):
 
         QMessageBox.information(self, "Metadata saved", "Metadata has been saved into the dataset.")
         # reload to show canonical stored version
-        self.show_selected_metadata()
+        self.dm_show_selected_metadata()
 
     def set_datamanager(self, dm: DataManager):
         self.dm = dm
@@ -741,53 +987,6 @@ class MainWindow(QMainWindow):
             f"Using datamanager at {self.dm.root} as {self.dm.cfg.user_name} <{self.dm.cfg.user_email}>"
         )
         self.dm_refresh_panel()
-
-    def show_selected_metadata(self):
-        """
-        Fetch metadata via DataManager.load_meta() for the selected item in the DM list.
-        If nothing is selected, try the current DM path.
-        """
-        if self.dm is None or self.dm_current_path is None:
-            QMessageBox.information(self, "No datamanager", "Select or create a datamanager first.")
-            return
-
-        item = self.dm_list.currentItem()
-        target_path = Path(item.data(Qt.UserRole)) if item else self.dm_current_path
-
-        ds_root, rel = self._find_dataset_root_and_rel(target_path)
-        if ds_root is None:
-            self.meta_title.setText("Metadata: —")
-            self.meta_view.setPlainText("No enclosing dataset found for this selection.")
-            self.meta_current_ds_root = None
-            self.meta_current_rel = None
-            self.meta_current_payload = None
-            return
-
-        # Prepare args for load_meta()
-        rel_arg = None if rel == Path(".") else rel.as_posix()
-
-        try:
-            payload = self.dm.load_meta(ds_path=ds_root, path=rel_arg, return_='payload', raise_on_missing=False)
-        except ValueError as e:
-            self.meta_title.setText(f"Metadata: {target_path.name}")
-            self.meta_view.setPlainText(f"Error while reading metadata:\n{e}")
-            self.meta_current_ds_root = None
-            self.meta_current_rel = None
-            self.meta_current_payload = None
-            return
-
-        self.meta_current_ds_root = ds_root
-        self.meta_current_rel = rel_arg
-        # if nothing yet, start from empty dict to allow adding
-        self.meta_current_payload = dict(payload) if payload else {}
-
-        title_name = target_path.name if rel_arg else f"{ds_root.name} (dataset)"
-        self.meta_title.setText(f"Metadata: {title_name}")
-
-        if self.meta_current_payload:
-            self.meta_view.setPlainText(json.dumps(self.meta_current_payload, indent=2, ensure_ascii=False))
-        else:
-            self.meta_view.setPlainText("No metadata found. You can add fields below.")
 
     def sync_with_gin(self, recursive=True):
         if self.dm is None:
@@ -800,9 +999,10 @@ class MainWindow(QMainWindow):
 if __name__ == "__main__":
     app = QApplication(sys.argv)
 
-    # Force a stable, light theme regardless of OS setting
-    app.setStyle("Fusion")  # consistent cross-platform widget style
-    app.setPalette(app.style().standardPalette())  # the Fusion light palette
+    app.setStyle("Fusion")
+    # Create a light palette
+    light_palette = QPalette()
+    app.setPalette(create_light_palette())
 
     w = MainWindow()
     w.resize(1100, 700)

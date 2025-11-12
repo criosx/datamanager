@@ -228,7 +228,8 @@ class DataManager:
         """
         if path is not None:
             path = str(path)
-        dl.drop(dataset=str(dataset), path=path, recursive=recursive, what='filecontent')
+        content_path = Path(dataset) / Path(path)
+        dl.drop(dataset=str(dataset), path=content_path, recursive=recursive, what='filecontent')
 
     @staticmethod
     def get_data(dataset: str | os.PathLike, path: str | os.PathLike | list[str | os.PathLike] | None = None,
@@ -719,3 +720,20 @@ class DataManager:
             path=str(meta_dir) if meta_dir.exists() else None,
             message=f"scidata: metadata for {item_path}",
         )
+
+    @staticmethod
+    def remove_from_tree(dataset: str | os.PathLike, path: str | os.PathLike = None, recursive: bool = False,
+                         reckless: str = None) -> None:
+        """
+        Remove content from filesystem after confirming availability elsewhere.
+        :param dataset: (str, os.Pathlike) path to the dataset for which to drop local content
+        :param path: (str, os.Pathlike) relative path to the dataset component for which to drop local content,
+                      defaults to None which will drop all components of the dataset
+        :param recursive: whether to recursively step into subdatasets
+        :param reckless: disable safety measures for removing local content (see datalad api for remove), default None
+        :return: no return value
+        """
+        if path is not None:
+            path = str(path)
+        content_path = Path(dataset) / Path(path)
+        dl.remove(dataset=str(dataset), path=content_path, recursive=recursive, reckless=reckless)
