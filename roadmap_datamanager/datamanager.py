@@ -67,10 +67,10 @@ class DataManager:
             raise RuntimeError("DataManager requires user_name and user_email (none persisted yet).")
 
         # build config
-        self.root = Path(eff_root).expanduser().resolve()
-        self.root.mkdir(parents=True, exist_ok=True)
+        root_path = Path(eff_root).expanduser().resolve()
+        root_path.mkdir(parents=True, exist_ok=True)
         self.cfg = dmc.DataManagerConfig(
-            dm_root=str(self.root),
+            dm_root=str(root_path),
             user_name=eff_user_name,
             user_email=eff_user_email,
             default_project=eff_default_project,
@@ -88,7 +88,7 @@ class DataManager:
         )
 
         dmc.save_persistent_cfg({
-            "dm_root": str(self.root),
+            "dm_root": str(root_path),
             "user_name": self.cfg.user_name,
             "user_email": self.cfg.user_email,
             "default_project": self.cfg.default_project,
@@ -99,7 +99,7 @@ class DataManager:
         })
 
         if self.cfg.verbose:
-            print(f"[DataManager] root={self.root}")
+            print(f"[DataManager] root={root_path}")
             print(f"[DataManager] user={self.cfg.user_name} <{self.cfg.user_email}>")
             if self.cfg.default_project or self.cfg.default_campaign:
                 print(f"[DataManager] defaults: project={self.cfg.default_project} "
@@ -288,7 +288,7 @@ class DataManager:
         :return: (Path) to experiment dataset if argument provided, otherwise None
         """
 
-        up = self.root
+        up = Path(self.cfg.dm_root)
         pp = up / project if project else None
         cp = pp / campaign if (pp and campaign) else None
         ep = cp / experiment if (cp and experiment) else None
@@ -489,16 +489,16 @@ class DataManager:
             raise ValueError("return_ must be 'payload' or 'envelope'")
 
     def publish_lazy_to_remote(self, *, sibling_name: str = "gin", repo_name: str = "datamanager", dataset=None,
-                               access_protocol: str = "https-ssh", credential: Optional[str] = None,
-                               private: bool = False, message: str | None = None) -> None:
+                               access_protocol: str = "ssh", credential: Optional[str] = None,
+                               private: bool = False, message: str | None = None, existing: str = 'skip') -> None:
         """
         Publish the minimal ancestor needed to expose `dataset` on the remote, then push.
         Strategy: climb to the nearest ancestor that already has `sibling_name`,
-        else fall back to `self.root`. From there, run a single recursive publish/push.
+        else fall back to `self.cfg.dm_root`. From there, run a single recursive publish/push.
         """
         # normalize inputs
-        start_path = Path(dataset or self.root).expanduser().resolve()
-        root_path = Path(self.root).resolve()
+        start_path = Path(dataset or self.cfg.dm_root).expanduser().resolve()
+        root_path = Path(self.cfg.dm_root).resolve()
 
         if not Dataset(str(start_path)).is_installed():
             raise RuntimeError(f"Not a DataLad dataset: {start_path}")
@@ -531,7 +531,7 @@ class DataManager:
                 chosen = ds_path
                 break
 
-            # guard: if we’re no longer moving up, bail (dataset not under self.root)
+            # guard: if we’re no longer moving up, bail (dataset not under self.cfg.dm_root)
             parent = ds_path.parent.resolve()
             if parent == ds_path:
                 raise RuntimeError(
@@ -548,7 +548,7 @@ class DataManager:
             credential=credential,
             private=private,
             recursive=True,
-            existing='reconfigure'
+            existing=existing
         )
 
         # Save narrowly (only where needed) before the push, but OK to be simple here
@@ -580,7 +580,7 @@ class DataManager:
         """
 
         if dataset is None:
-            dataset = str(self.root)
+            dataset = str(self.cfg.dm_root)
         ds = Dataset(str(dataset))
 
         # make sure all changes are saved before publishing to GIN
@@ -602,12 +602,12 @@ class DataManager:
 
         out = ds.siblings(
             'query',
-            name='gin',
+            name=sibling_name,
             as_common_datasrc=f'{sibling_name}-src',
             recursive=recursive
         )
 
-        # register relative GIN URLs in .gitmodules of the parents as the abov command placed them only in the
+        # register relative GIN URLs in .gitmodules of the parents as the above command placed them only in the
         # .git/ record of the sibling itself
         for entry in out:
             # only subdatasets (not the root):
@@ -701,13 +701,14 @@ class DataManager:
         Persist the current data manager configuration to disk.
         """
         dmc.save_persistent_cfg({
-            "dm_root": str(self.root),
+            "dm_root": self.cfg.dm_root,
             "user_name": self.cfg.user_name,
             "user_email": self.cfg.user_email,
             "default_project": self.cfg.default_project,
             "default_campaign": self.cfg.default_campaign,
             "GIN_url": self.cfg.GIN_url,
             "GIN_repo": self.cfg.GIN_repo,
+            "GIN_user": self.cfg.GIN_user,
         })
 
     def save_meta(self, ds_path: str | Path, *, path: str | Path | None = None, name: Optional[str] = None,

@@ -99,6 +99,10 @@ class MainWindow(QMainWindow):
         act_clone_from_GIN.triggered.connect(self.clone_from_gin)
         remote_menu.addAction(act_clone_from_GIN)
 
+        act_publish_all_GIN = QAction("Create new repo at GIN", self)
+        act_publish_all_GIN.triggered.connect(self.dm_publish_new_to_remote_all)
+        remote_menu.addAction(act_publish_all_GIN)
+
 
 
     def _create_split_view(self):
@@ -566,8 +570,24 @@ class MainWindow(QMainWindow):
             self.dm_current_path = p
             self.dm_refresh_panel()
 
-    def dm_publish_to_remote(self):
-        paths = self._selected_dm_paths()
+    def dm_publish_new_to_remote_all(self):
+        self.dm_publish_to_remote(entire_tree=True, existing='reconfigure')
+
+    def dm_publish_to_remote(self, entire_tree=False, existing='skip'):
+        """
+        Publish all files to the remote server.
+        :param entire_tree: (bool) Publish all files to the remote server if True, defaults to False.
+        :param existing: (str) how to handle existing remote siblings, defaults to 'skip'.
+        :return: no return value
+        """
+        paths = []
+        if entire_tree:
+            dm_root = getattr(self.dm.cfg, "dm_root", None)
+            if dm_root is not None:
+                paths = [(dm_root, "")]
+        else:
+            paths = self._selected_dm_paths()
+
         if not paths:
             return
 
@@ -579,7 +599,8 @@ class MainWindow(QMainWindow):
                 self._run_in_worker(
                     self.dm.publish_lazy_to_remote,
                     dataset=ds_root,
-                    repo_name=getattr(self.dm.cfg, "GIN_repo", "")
+                    repo_name=getattr(self.dm.cfg, "GIN_repo", ""),
+                    existing=existing,
                 )
                 self.logviewer_append_text(f"[INFO] GIN published content: {p}\n")
             except Exception as e:
