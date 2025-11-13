@@ -15,114 +15,17 @@ from PySide6.QtWidgets import (
     QVBoxLayout, QWidget
 )
 
-# import datamanager
 from roadmap_datamanager.datamanager import DataManager, ALLOWED_CATEGORIES
 
 from remote import GinRemoteDialog
+from core import create_light_palette
+from core import EmittingStream, FirstRunDialog, GuiLogHandler, Worker
 
 METADATA_MANUAL_ADD_ITEMS = [
     'condition',
     'description',
     'sample',
 ]
-
-
-def create_light_palette():
-    p = QPalette()
-    p.setColor(QPalette.Window, QColor(240, 240, 240))
-    p.setColor(QPalette.WindowText, Qt.black)
-    p.setColor(QPalette.Base, QColor(255, 255, 255))
-    p.setColor(QPalette.AlternateBase, QColor(240, 240, 240))
-    p.setColor(QPalette.ToolTipBase, Qt.white)
-    p.setColor(QPalette.ToolTipText, Qt.black)
-    p.setColor(QPalette.Text, Qt.black)
-    p.setColor(QPalette.Button, QColor(240, 240, 240))
-    p.setColor(QPalette.ButtonText, Qt.black)
-    p.setColor(QPalette.BrightText, Qt.red)
-    p.setColor(QPalette.Link, QColor(42, 130, 218))
-    p.setColor(QPalette.Highlight, QColor(42, 130, 218))
-    p.setColor(QPalette.HighlightedText, Qt.white)
-
-    # --- inactive buttons ---
-    p.setColor(QPalette.Inactive, QPalette.Button, QColor(230, 230, 230))
-    p.setColor(QPalette.Inactive, QPalette.ButtonText, QColor(80, 80, 80))
-
-    # --- disabled buttons ---
-    p.setColor(QPalette.Disabled, QPalette.Button, QColor(230, 230, 230))
-    p.setColor(QPalette.Disabled, QPalette.ButtonText, QColor(150, 150, 150))
-    return p
-
-
-class FirstRunDialog(QDialog):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("Initial DataManager setup")
-        layout = QFormLayout(self)
-        self.name_edit = QLineEdit(self)
-        self.email_edit = QLineEdit(self)
-        layout.addRow("User name:", self.name_edit)
-        layout.addRow("User email:", self.email_edit)
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel, parent=self)
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
-
-    def get_values(self):
-        return self.name_edit.text().strip(), self.email_edit.text().strip()
-
-
-class GuiLogHandler(logging.Handler, QObject):
-    # Same signal as EmittingStream
-    textWritten = Signal(str)
-
-    def __init__(self):
-        super().__init__()
-        QObject.__init__(self)
-
-    def emit(self, record):
-        msg = self.format(record)
-        self.textWritten.emit(msg + '\n')
-
-
-class Worker(QRunnable):
-    def __init__(self, fn, *args, **kwargs):
-        super().__init__()
-        self.fn = fn
-        self.args = args
-        self.kwargs = kwargs
-        self.signals = WorkerSignals()
-
-    def run(self):
-        try:
-            out = self.fn(*self.args, **self.kwargs)
-            self.signals.done.emit(out)
-        except Exception as e:
-            self.signals.error.emit(str(e))
-
-
-class WorkerSignals(QObject):
-    done = Signal(object)
-    error = Signal(str)
-    progress = Signal(str)
-
-
-class EmittingStream(QObject):
-    textWritten = Signal(str)
-
-    def write(self, text):
-        self.textWritten.emit(str(text))
-        # in addition, write to the original stdout to see console output
-        sys.__stdout__.write(text)
-        self.flush()    # Ensure immediate output
-
-    def flush(self):
-        # Required for file-like objects, but can be empty for this use case
-        pass
-
-    @staticmethod
-    def isatty():
-        # Returns False, as this is not a TTY device.
-        return False
 
 
 class MainWindow(QMainWindow):
@@ -276,7 +179,7 @@ class MainWindow(QMainWindow):
         self.dm_list.setEditTriggers(QListWidget.NoEditTriggers)
         self.dm_list.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.dm_list.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.dm_list.customContextMenuRequested.connect(self._dm_show_context_menu)
+        self.dm_list.customContextMenuRequested.connect(self._dm_context_menu)
         dm_layout.addWidget(self.dm_list, 1)
 
         splitter.addWidget(self.dm_panel)
@@ -361,6 +264,45 @@ class MainWindow(QMainWindow):
 
         return "other"
 
+    def _dm_context_menu(self, pos):
+        items = self.dm_list.selectedItems()
+        if not items:
+            return
+
+        menu = QMenu(self)
+        act_open = menu.addAction("Open")
+
+        remote_menu = QMenu("Remote", self)
+        act_update_from_remote = remote_menu.addAction("Update from remote")
+        act_get_from_remote = remote_menu.addAction("Get content from remote")
+        act_get_from_remote_rec = remote_menu.addAction("Get content from remote (recursive)")
+        act_publish_remote = remote_menu.addAction("Publish to remote")
+        menu.addMenu(remote_menu)
+
+        remove_menu = QMenu("Local Remove", self)
+        act_drop = remove_menu.addAction("Drop content (annex)")
+        act_remove = remove_menu.addAction("Remove content (safely)")
+        act_remove_reckless = remove_menu.addAction("Remove content (reckless)")
+        menu.addMenu(remove_menu)
+
+        action = menu.exec(self.dm_list.mapToGlobal(pos))
+        if action == act_open:
+            self.dm_open_selected()
+        elif action == act_drop:
+            self.dm_drop_selected()
+        elif action == act_remove:
+            self.dm_remove_selected()
+        elif action == act_remove_reckless:
+            self.dm_remove_selected(reckless=True)
+        elif action == act_publish_remote:
+            self.dm_publish_to_remote()
+        elif action == act_update_from_remote:
+            self.dm_update_from_remote()
+        elif action == act_get_from_remote:
+            self.dm_get_from_remote()
+        elif action == act_get_from_remote_rec:
+            self.dm_get_from_remote(recursive=True)
+
     def _dm_current_level(self):
         """
         Returns (level, parts)
@@ -397,29 +339,6 @@ class MainWindow(QMainWindow):
             self.dm_current_path = p
             self.dm_refresh_panel()
         # else: it's a file/symlink — ignore or handle later (open in Finder, fetch annex, etc.)
-
-    def _dm_show_context_menu(self, pos):
-        items = self.dm_list.selectedItems()
-        if not items:
-            return
-
-        menu = QMenu(self)
-        act_open = menu.addAction("Open")
-        remove_menu = QMenu("Remove", self)
-        act_drop = remove_menu.addAction("Drop content (annex)")
-        act_remove = remove_menu.addAction("Remove content (safely)")
-        act_remove_reckless = remove_menu.addAction("Remove content (reckless)")
-        menu.addMenu(remove_menu)
-
-        action = menu.exec(self.dm_list.mapToGlobal(pos))
-        if action == act_open:
-            self.dm_open_selected()
-        elif action == act_drop:
-            self.dm_drop_selected()
-        elif action == act_remove:
-            self.dm_remove_selected()
-        elif action == act_remove_reckless:
-            self.dm_remove_selected(reckless=True)
 
     def _find_dataset_root_and_rel(self, path: Path) -> tuple[Path | None, Path | None]:
         """
@@ -466,13 +385,21 @@ class MainWindow(QMainWindow):
         )
         self.pool.start(worker)
 
-    def _selected_dm_paths(self) -> list[Path]:
+    def _selected_dm_paths(self):
         paths: list[Path] = []
         for item in self.dm_list.selectedItems():
             path_str = item.data(Qt.UserRole)
             if path_str:
                 paths.append(Path(path_str))
-        return paths
+
+        paths2 = []
+        for p in paths:
+            ds_root, rel = self._find_dataset_root_and_rel(p)
+            if ds_root is None or rel is None:
+                continue
+            rel_str = "." if rel == Path("../roadmap_datamanager") else rel.as_posix()
+            paths2.append((ds_root, rel_str))
+        return paths2
 
     @Slot(str)
     def apply_metadata_field(self):
@@ -522,7 +449,7 @@ class MainWindow(QMainWindow):
         self._run_in_worker(
             self.dm.clone_from_gin,
             dest=self.dm_current_path,
-            source_url=self.dm.cfg.GIN_url
+            source_url=getattr(self.dm.cfg, "GIN_url", "")
         )
 
     def dm_create_dataset_here(self):
@@ -582,18 +509,11 @@ class MainWindow(QMainWindow):
         self.dm_refresh_panel()
 
     def dm_drop_selected(self):
-        if self.dm is None:
-            return
         paths = self._selected_dm_paths()
         if not paths:
             return
-
-        for p in paths:
-            ds_root, rel = self._find_dataset_root_and_rel(p)
-            if ds_root is None or rel is None:
-                continue
-            rel_str = "." if rel == Path("../roadmap_datamanager") else rel.as_posix()
-
+        for ds_root, rel_str in paths:
+            p = str(ds_root) + ':' + str(rel_str)
             try:
                 self._run_in_worker(
                     self.dm.drop_local,
@@ -605,7 +525,24 @@ class MainWindow(QMainWindow):
                 self.logviewer_append_text(f"[INFO] Dropped content: {p}\n")
             except Exception as e:
                 self.logviewer_append_text(f"[WARN] Could not drop {p}: {e}\n")
+        self.dm_refresh_panel()
 
+    def dm_get_from_remote(self, recursive=False):
+        paths = self._selected_dm_paths()
+        if not paths:
+            return
+        for ds_root, rel_str in paths:
+            p = str(ds_root) + ':' + str(rel_str)
+            try:
+                self._run_in_worker(
+                    self.dm.get_data,
+                    dataset=str(ds_root),
+                    path=rel_str,
+                    recursive=recursive
+                )
+                self.logviewer_append_text(f"[INFO] Got content: {p}\n")
+            except Exception as e:
+                self.logviewer_append_text(f"[WARN] Could not get {p}: {e}\n")
         self.dm_refresh_panel()
 
     def dm_go_up(self):
@@ -627,6 +564,31 @@ class MainWindow(QMainWindow):
         if p.is_dir():
             self.dm_current_path = p
             self.dm_refresh_panel()
+
+    def dm_publish_to_remote(self):
+        paths = self._selected_dm_paths()
+        if not paths:
+            return
+
+        ds_root_set = {str(ds_root) for ds_root, _ in paths}
+
+        for ds_root in ds_root_set:
+            p = str(ds_root)
+            try:
+                self._run_in_worker(
+                    self.dm.publish_gin_sibling,
+                    dataset=ds_root,
+                    recursive=True,
+                    repo_name=getattr(self.dm.cfg, "GIN_repo", "")
+                )
+                self._run_in_worker(
+                    self.dm.push_to_remotes,
+                    dataset=ds_root,
+                    recursive=True
+                )
+                self.logviewer_append_text(f"[INFO] GIN published content: {p}\n")
+            except Exception as e:
+                self.logviewer_append_text(f"[WARN] Could not GIN publish {p}: {e}\n")
 
     def dm_refresh_panel(self):
         """
@@ -734,8 +696,6 @@ class MainWindow(QMainWindow):
             self.meta_view.setPlainText("No metadata found. You can add fields below.")
 
     def dm_remove_selected(self, reckless=False):
-        if self.dm is None:
-            return
         paths = self._selected_dm_paths()
         if not paths:
             return
@@ -763,12 +723,8 @@ class MainWindow(QMainWindow):
         if ret != QMessageBox.Yes:
             return
 
-        for p in paths:
-            ds_root, rel = self._find_dataset_root_and_rel(p)
-            if ds_root is None or rel is None:
-                continue
-            rel_str = None if rel == Path("../roadmap_datamanager") else rel.as_posix()
-
+        for ds_root, rel_str in paths:
+            p = str(ds_root) + ':' + str(rel_str)
             try:
                 self._run_in_worker(
                     self.dm.remove_from_tree,
@@ -782,6 +738,26 @@ class MainWindow(QMainWindow):
                 self.logviewer_append_text(f"[WARN] Could not remove {p}: {e}\n")
 
         self.dm_refresh_panel()
+
+    def dm_update_from_remote(self):
+        paths = self._selected_dm_paths()
+        if not paths:
+            return
+
+        ds_root_set = {str(ds_root) for ds_root, _ in paths}
+
+        for ds_root in ds_root_set:
+            p = str(ds_root)
+            try:
+                self._run_in_worker(
+                    self.dm.pull_from_remotes,
+                    dataset=ds_root,
+                    recursive=True,
+                    repo_name=getattr(self.dm.cfg, "GIN_repo", "")
+                )
+                self.logviewer_append_text(f"[INFO] GIN published content: {p}\n")
+            except Exception as e:
+                self.logviewer_append_text(f"[WARN] Could not GIN publish {p}: {e}\n")
 
     def fileviewer_install_selected_sources_into_dm(self):
         """
@@ -909,9 +885,11 @@ class MainWindow(QMainWindow):
                               default_protocol=default_protocol)
         if dlg.exec() == QDialog.Accepted:
             url = dlg.url()
+            repo = dlg.repo()
             # Store to config
             if self.dm is not None:
                 setattr(self.dm.cfg, "GIN_url", url)
+                setattr(self.dm.cfg, "GIN_repo", repo)
                 self.dm.save_current_dm_configuration()
             self.status.showMessage(f"GIN remote set to: {url}", 5000)
 

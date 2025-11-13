@@ -46,6 +46,7 @@ class DataManager:
         register_existing: bool = True,
         now_fn: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
         GIN_url: Optional[str] = None,
+        GIN_repo: Optional[str] = None
     ) -> None:
 
         # load persistent configuration
@@ -58,6 +59,7 @@ class DataManager:
         eff_default_project = default_project or persisted.get("default_project")
         eff_default_campaign = default_campaign or persisted.get("default_campaign")
         eff_GIN_url = GIN_url or persisted.get("GIN_url")
+        eff_GIN_repo = GIN_repo or persisted.get("GIN_repo")
 
         if eff_user_name is None or eff_user_email is None:
             raise RuntimeError("DataManager requires user_name and user_email (none persisted yet).")
@@ -79,6 +81,7 @@ class DataManager:
             register_existing=register_existing,
             now_fn=now_fn,
             GIN_url=eff_GIN_url,
+            GIN_repo=eff_GIN_repo
         )
 
         dmc.save_persistent_cfg({
@@ -88,6 +91,7 @@ class DataManager:
             "default_project": self.cfg.default_project,
             "default_campaign": self.cfg.default_campaign,
             "GIN_url": self.cfg.GIN_url,
+            "GIN_repo": self.cfg.GIN_repo
         })
 
         if self.cfg.verbose:
@@ -114,6 +118,7 @@ class DataManager:
             default_project=persisted.get("default_project"),
             default_campaign=persisted.get("default_campaign"),
             GIN_url=persisted.get("GIN_url"),
+            GIN_repo=persisted.get("GIN_repo")
         )
 
     @staticmethod
@@ -610,6 +615,7 @@ class DataManager:
             "default_project": self.cfg.default_project,
             "default_campaign": self.cfg.default_campaign,
             "GIN_url": self.cfg.GIN_url,
+            "GIN_repo": self.cfg.GIN_repo,
         })
 
     def save_meta(self, ds_path: str | Path, *, path: str | Path | None = None, name: Optional[str] = None,
