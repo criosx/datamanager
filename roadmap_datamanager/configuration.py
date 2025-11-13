@@ -45,6 +45,7 @@ class DataManagerConfig:
     # GIN repository
     GIN_url: Optional[str] = None
     GIN_repo: Optional[str] = None
+    GIN_user: Optional[str] = None
 
     # Datamanager root directory
     dm_root: Optional[str] = None

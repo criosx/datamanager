@@ -46,7 +46,8 @@ class DataManager:
         register_existing: bool = True,
         now_fn: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
         GIN_url: Optional[str] = None,
-        GIN_repo: Optional[str] = None
+        GIN_repo: Optional[str] = None,
+        GIN_user: Optional[str] = None
     ) -> None:
 
         # load persistent configuration
@@ -60,6 +61,7 @@ class DataManager:
         eff_default_campaign = default_campaign or persisted.get("default_campaign")
         eff_GIN_url = GIN_url or persisted.get("GIN_url")
         eff_GIN_repo = GIN_repo or persisted.get("GIN_repo")
+        eff_GIN_user = GIN_user or persisted.get("GIN_user")
 
         if eff_user_name is None or eff_user_email is None:
             raise RuntimeError("DataManager requires user_name and user_email (none persisted yet).")
@@ -81,7 +83,8 @@ class DataManager:
             register_existing=register_existing,
             now_fn=now_fn,
             GIN_url=eff_GIN_url,
-            GIN_repo=eff_GIN_repo
+            GIN_repo=eff_GIN_repo,
+            GIN_user=eff_GIN_user
         )
 
         dmc.save_persistent_cfg({
@@ -91,7 +94,8 @@ class DataManager:
             "default_project": self.cfg.default_project,
             "default_campaign": self.cfg.default_campaign,
             "GIN_url": self.cfg.GIN_url,
-            "GIN_repo": self.cfg.GIN_repo
+            "GIN_repo": self.cfg.GIN_repo,
+            "GIN_user": self.cfg.GIN_user
         })
 
         if self.cfg.verbose:
@@ -118,7 +122,8 @@ class DataManager:
             default_project=persisted.get("default_project"),
             default_campaign=persisted.get("default_campaign"),
             GIN_url=persisted.get("GIN_url"),
-            GIN_repo=persisted.get("GIN_repo")
+            GIN_repo=persisted.get("GIN_repo"),
+            GIN_user=persisted.get("GIN_user")
         )
 
     @staticmethod
@@ -199,11 +204,14 @@ class DataManager:
         env.setdefault("GIT_TERMINAL_PROMPT", "0")
         return env
 
-    def clone_from_gin(self, dest: str | os.PathLike, source_url: str = None) -> Path:
+    def clone_from_gin(self, dest: str | os.PathLike, source_url_root: str = None, user: str = None,
+                       repo: str = None) -> Path:
         """
         Clone a superdataset from GIN into dest; install subdatasets (no data).
         :param dest: (str, os.Pathlike) destination path to clone the GIN dataset into
-        :param source_url: (str) URL of the GIN dataset to clone, defaults to None
+        :param source_url_root: (str) URL root of the GIN dataset to clone, defaults to None
+        :param user: (str) GIN unser name for the repository, defaults to None
+        :param repo: (str) repo name of the repository, defaults to None
         :return: the path to the cloned GIN dataset
         """
         dest = Path(dest).expanduser().resolve()
@@ -211,11 +219,20 @@ class DataManager:
         if any(dest.iterdir()):
             raise RuntimeError(f"Destination path {dest} must be empty.")
 
-        if source_url is None:
-            source_url = self.cfg.GIN_url
+        if source_url_root is None:
+            source_url_root = f"https://gin.g-node.org/"
 
-        if source_url is None:
-            raise RuntimeError(f"Source URL for GIN repository not provided.")
+        if user is None:
+            user = getattr(self.cfg, "GIN_user", None)
+            if user is None:
+                raise RuntimeError(f"No username provided.")
+
+        if repo is None:
+            repo = getattr(self.cfg, "GIN_repo", None)
+            if repo is None:
+                raise RuntimeError(f"No repository name provided.")
+
+        source_url = source_url_root + user + '/' + repo + '.git'
 
         ds = dl.clone(source=source_url, path=str(dest))
         ds.get(recursive=True, get_data=False)              # installs subdatasets
@@ -471,9 +488,83 @@ class DataManager:
         else:
             raise ValueError("return_ must be 'payload' or 'envelope'")
 
+    def publish_lazy_to_remote(self, *, sibling_name: str = "gin", repo_name: str = "datamanager", dataset=None,
+                               access_protocol: str = "https-ssh", credential: Optional[str] = None,
+                               private: bool = False, message: str | None = None) -> None:
+        """
+        Publish the minimal ancestor needed to expose `dataset` on the remote, then push.
+        Strategy: climb to the nearest ancestor that already has `sibling_name`,
+        else fall back to `self.root`. From there, run a single recursive publish/push.
+        """
+        # normalize inputs
+        start_path = Path(dataset or self.root).expanduser().resolve()
+        root_path = Path(self.root).resolve()
+
+        if not Dataset(str(start_path)).is_installed():
+            raise RuntimeError(f"Not a DataLad dataset: {start_path}")
+
+        # climb until you find an ancestor with the target sibling, or root
+        ds_path = start_path
+        chosen = None
+        while True:
+            ds = Dataset(str(ds_path))
+            if not ds.is_installed():
+                raise RuntimeError(f"Ancestor not installed as dataset: {ds_path}")
+
+            # Has the target sibling already? Note: cloned trees often have a sibling name 'origin' independent of
+            # the initial designation.
+            sibs = ds.siblings(action="query", return_type="list")
+            has_target_sibling_name = any(s.get("name") == sibling_name for s in sibs)
+            has_target_origin = any(s.get("name") == 'origin' for s in sibs)
+
+            if has_target_sibling_name:
+                sibling_name_arg = sibling_name
+                chosen = ds_path
+                break
+            elif has_target_origin:
+                sibling_name_arg = 'origin'
+                chosen = ds_path
+                break
+
+            if ds_path == root_path:
+                sibling_name_arg = sibling_name
+                chosen = ds_path
+                break
+
+            # guard: if we’re no longer moving up, bail (dataset not under self.root)
+            parent = ds_path.parent.resolve()
+            if parent == ds_path:
+                raise RuntimeError(
+                    f"{start_path} is not within managed root {root_path}; refusing to climb past filesystem root."
+                )
+            ds_path = parent
+
+        # One recursive publish from the chosen ancestor creates/configures siblings and fixes .gitmodules URLs.
+        self.publish_gin_sibling(
+            sibling_name=sibling_name_arg,
+            repo_name=repo_name,
+            dataset=str(chosen),
+            access_protocol=access_protocol,
+            credential=credential,
+            private=private,
+            recursive=True,
+            existing='reconfigure'
+        )
+
+        # Save narrowly (only where needed) before the push, but OK to be simple here
+        Dataset(str(chosen)).save(recursive=True, message=message or "Publish subtree")
+
+        # Push once, recursively, to the chosen remote name
+        self.push_to_remotes(
+            dataset=str(chosen),
+            recursive=True,
+            message=message,
+            sibling_name=sibling_name_arg
+        )
+
     def publish_gin_sibling(self, *, sibling_name: str = "gin", repo_name: str = "datamanager", dataset=None,
                             access_protocol: str = "ssh", credential: Optional[str] = None, private: bool = False,
-                            recursive: bool = False) -> None:
+                            recursive: bool = False, existing: str = 'skip') -> None:
         """
         Creates and pushes a gin sibling dataset to {repo_name}.
 
@@ -484,6 +575,7 @@ class DataManager:
         :param credential: (str) credential to be used for GIN, default None
         :param private: (bool) privacy of the published dataset, default False
         :param recursive: (bool) whether to step recursivly into nested subdatasets, default False
+        :param existing: (str) how to deal with existing siblings (see datalad manual), default 'skip'
         :return: no return value
         """
 
@@ -500,7 +592,7 @@ class DataManager:
             repo_name,
             name=sibling_name,
             recursive=recursive,
-            existing="skip",
+            existing=existing,
             access_protocol=access_protocol,
             credential=credential,
             private=private

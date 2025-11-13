@@ -383,6 +383,8 @@ class MainWindow(QMainWindow):
         worker.signals.error.connect(
             lambda msg: self.logviewer_append_text(f"[ERROR] {msg}\n")
         )
+        # Trigger widget update when worker is done
+        worker.signals.done.connect(self.dm_refresh_panel)
         self.pool.start(worker)
 
     def _selected_dm_paths(self):
@@ -448,8 +450,7 @@ class MainWindow(QMainWindow):
         """
         self._run_in_worker(
             self.dm.clone_from_gin,
-            dest=self.dm_current_path,
-            source_url=getattr(self.dm.cfg, "GIN_url", "")
+            dest=self.dm_current_path
         )
 
     def dm_create_dataset_here(self):
@@ -496,14 +497,14 @@ class MainWindow(QMainWindow):
         # call datamanager
         if level == "root":
             # create project
-            self.dm.init_tree(project=name)
+            self._run_in_worker(self.dm.init_tree, project=name)
             # current view is root -> refresh
         elif level == "project":
             project = parts[1]
-            self.dm.init_tree(project=project, campaign=name)
+            self._run_in_worker(self.dm.init_tree, project=project, campaign=name)
         elif level == "campaign":
             project, campaign = parts[1], parts[2]
-            self.dm.init_tree(project=project, campaign=campaign, experiment=name)
+            self._run_in_worker(self.dm.init_tree, project=project, campaign=campaign, experiment=name)
 
         # after creating, refresh the panel so the new item shows up
         self.dm_refresh_panel()
@@ -576,15 +577,9 @@ class MainWindow(QMainWindow):
             p = str(ds_root)
             try:
                 self._run_in_worker(
-                    self.dm.publish_gin_sibling,
+                    self.dm.publish_lazy_to_remote,
                     dataset=ds_root,
-                    recursive=True,
                     repo_name=getattr(self.dm.cfg, "GIN_repo", "")
-                )
-                self._run_in_worker(
-                    self.dm.push_to_remotes,
-                    dataset=ds_root,
-                    recursive=True
                 )
                 self.logviewer_append_text(f"[INFO] GIN published content: {p}\n")
             except Exception as e:
@@ -752,8 +747,7 @@ class MainWindow(QMainWindow):
                 self._run_in_worker(
                     self.dm.pull_from_remotes,
                     dataset=ds_root,
-                    recursive=True,
-                    repo_name=getattr(self.dm.cfg, "GIN_repo", "")
+                    recursive=True
                 )
                 self.logviewer_append_text(f"[INFO] GIN published content: {p}\n")
             except Exception as e:
@@ -886,10 +880,12 @@ class MainWindow(QMainWindow):
         if dlg.exec() == QDialog.Accepted:
             url = dlg.url()
             repo = dlg.repo()
+            username = dlg.username()
             # Store to config
             if self.dm is not None:
                 setattr(self.dm.cfg, "GIN_url", url)
                 setattr(self.dm.cfg, "GIN_repo", repo)
+                setattr(self.dm.cfg, "GIN_user", username)
                 self.dm.save_current_dm_configuration()
             self.status.showMessage(f"GIN remote set to: {url}", 5000)
 
