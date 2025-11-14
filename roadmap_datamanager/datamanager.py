@@ -579,13 +579,20 @@ class DataManager:
         :return: no return value
         """
 
+        # init reference dataset
         if dataset is None:
             dataset = str(self.cfg.dm_root)
         ds = Dataset(str(dataset))
 
+        # compute repo name
+        relpath = Path(dataset).relative_to(Path(self.cfg.dm_root))
+        if repo_name is None:
+            repo_name = self.cfg.GIN_repo
+        if relpath != '.':
+            repo_name = repo_name + '-' + '-'.join(relpath.parts)
+
         # make sure all changes are saved before publishing to GIN
-        if recursive:
-            ds.save(recursive=True, message='Recursive save for GIN publishing')
+        ds.save(recursive=recursive, message='Save for GIN publishing')
 
         # Create/reconfigure GIN sibling with content hosting
         ds.create_sibling_gin(
@@ -651,22 +658,19 @@ class DataManager:
                 f"(recursive={recursive})."
             )
 
-    def pull_from_remotes(self, dataset: str | os.PathLike, recursive: bool = True, sibling_name: str = None,
-                          get_targets: list[str | os.PathLike] | None = None) -> None:
+    @staticmethod
+    def pull_from_remotes(dataset: str | os.PathLike, recursive: bool = True, sibling_name: str = None) -> None:
         """
         Pull latest history from GIN and merge.
         :param dataset: (str) path to the dataset to update from remotes
         :param recursive: whether recursively pull from remotes, default True
         :param sibling_name: (str) name of the sibling datasets to pull from (such as 'gin' for GIN publishing),
                              default: None (recommended), which self-determines the target to pull from
-        :param get_targets: (list[str | os.PathLike | None]) list of content targets to get from remotes.
-                            The get is non-recursive. Use self.get_data if recursive is needed.
         :return: no return value
         """
         ds = Dataset(str(dataset))
-        dl.update(dataset=str(ds.path), recursive=recursive, how='merge', sibling=sibling_name)
-        if get_targets is not None:
-            self.get_data(dataset, path=get_targets, recursive=False)
+        ds.update(recursive=recursive, how='merge', sibling=sibling_name)
+        ds.get(recursive=True, get_data=False)
 
     @staticmethod
     def push_to_remotes(dataset: str | os.PathLike, recursive: bool = True, message: str | None = None, sibling_name:

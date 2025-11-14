@@ -311,15 +311,15 @@ class MainWindow(QMainWindow):
         """
         Returns (level, parts)
         level ∈ {"root", "project", "campaign", "experiment", "category"}
-        parts = path parts after dm.root
+        parts = path parts after dm.cfg.dm_root
         """
         pcec = ["Not set.", "", "", "", ""]
         level = "root"
         if self.dm is None or self.dm_current_path is None:
             return level, pcec
 
-        root = self.dm.root
-        cur = self.dm_current_path
+        root = Path(self.dm.cfg.dm_root)
+        cur = Path(self.dm_current_path)
         rel = cur.relative_to(root)
         pcec[0] = str(root)
         if str(rel) == ".":
@@ -358,7 +358,7 @@ class MainWindow(QMainWindow):
         search_from = path if path.is_dir() else path.parent
 
         # climb up until DM root
-        dm_root = self.dm.root if self.dm else None
+        dm_root = Path(self.dm.cfg.dm_root) if self.dm else None
         p = search_from
         while True:
             if p.is_dir() and self._is_dataset_dir(p):
@@ -553,7 +553,7 @@ class MainWindow(QMainWindow):
     def dm_go_up(self):
         if self.dm is None or self.dm_current_path is None:
             return
-        if self.dm_current_path == self.dm.root:
+        if self.dm_current_path == Path(self.dm.cfg.dm_root):
             return
         self.dm_current_path = self.dm_current_path.parent
         self.dm_refresh_panel()
@@ -977,9 +977,9 @@ class MainWindow(QMainWindow):
 
     def set_datamanager(self, dm: DataManager):
         self.dm = dm
-        self.dm_current_path = dm.root  # start at root
+        self.dm_current_path = Path(dm.cfg.dm_root)  # start at root
         self.status.showMessage(
-            f"Using datamanager at {self.dm.root} as {self.dm.cfg.user_name} <{self.dm.cfg.user_email}>"
+            f"Using datamanager at {self.dm.cfg.dm_root} as {self.dm.cfg.user_name} <{self.dm.cfg.user_email}>"
         )
         self.dm_refresh_panel()
 
@@ -987,7 +987,7 @@ class MainWindow(QMainWindow):
         if self.dm is None:
             return
         # simple pull
-        self.dm.pull_from_remotes(dataset=self.dm.root, recursive=recursive)
+        self.dm.pull_from_remotes(dataset=self.dm.cfg.dm_root, recursive=recursive)
         self.status.showMessage("Pulled from GIN.")
 
 
