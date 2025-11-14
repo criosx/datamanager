@@ -182,6 +182,10 @@ class DataManager:
         raise RuntimeError(f"Could not read dataset id in {ds.path}")
 
     @staticmethod
+    def _is_dataset_dir(p: Path) -> bool:
+        return (p / ".datalad").exists() or (p / ".git").exists()
+
+    @staticmethod
     def _parse_iso(ts: str) -> datetime:
         """
         Lenient ISO parser: accept 'YYYY-MM-DDTHH:MM:SS' (no micros, no tz)
@@ -253,13 +257,42 @@ class DataManager:
         content_path = Path(dataset) / Path(path)
         dl.drop(dataset=str(dataset), path=content_path, recursive=recursive, what='filecontent')
 
+    def find_dataset_root_and_rel(self, path: Path) -> tuple[Path | None, Path | None]:
+        """
+        Walk up from `path` until we find a directory containing a dataset.
+        Returns (ds_root, relpath_within_dataset) or (None, None) if not found.
+        If `path` *is* the dataset root, relpath is Path('.').
+        """
+
+        if not (path.exists() or path.is_symlink()):
+            return None, None
+
+        # if it's a file/symlink, start from parent when searching dataset root
+        search_from = path if path.is_dir() else path.parent
+
+        # climb up until DM root
+        dm_root = Path(self.cfg.dm_root)
+        p = search_from
+        while True:
+            if p.is_dir() and self._is_dataset_dir(p):
+                ds_root = p
+                # rel path is relative to ds_root; for the dataset itself, use '.'
+                rel = path.relative_to(ds_root)
+                return ds_root, rel
+            if dm_root and (p == dm_root or p == dm_root.parent):
+                break
+            if p.parent == p:
+                break
+            p = p.parent
+        return None, None
+
     @staticmethod
     def get_data(dataset: str | os.PathLike, path: str | os.PathLike | list[str | os.PathLike] | None = None,
                  recursive: bool = False) -> None:
         """
         Retrieve annexed file content (bytes).
         :param dataset: (str, os.Pathlike) path to the dataset to update from GIN
-        :param path: (str, os.Pathlike) relative path to the dataset component to retrieve content for, defaults to
+        :param path: (str, os.Pathlike) path to the dataset component to retrieve content for, defaults to
                      None which will obtain all components of the dataset
         :param recursive: whether to recursively step into subdatasets
         :return: no return value
@@ -588,7 +621,7 @@ class DataManager:
         relpath = Path(dataset).relative_to(Path(self.cfg.dm_root))
         if repo_name is None:
             repo_name = self.cfg.GIN_repo
-        if relpath != '.':
+        if str(relpath) != '.':
             repo_name = repo_name + '-' + '-'.join(relpath.parts)
 
         # make sure all changes are saved before publishing to GIN
@@ -700,9 +733,38 @@ class DataManager:
                 raise RuntimeError("No publication target configured and no 'gin'/'origin' sibling found.") from e
             ds.push(to=fallback, recursive=recursive, data="anything")
 
+    @staticmethod
+    def remove_siblings(path: str | os.PathLike, name: str = 'gin', recursive: bool = False) -> None:
+        """
+        Removes all sibling datasets from tree.
+        :param path: (str or Path) root path to remove sibling datasets from
+        :param name: (str) sibling name to match
+        :param recursive: (bool) whether to recursively step into subdatasets
+        :return: no return value
+        """
+        path = Path(path).resolve()
+        dl.siblings(action='remove', path=path, name=name, recursive=recursive)
+
+    def save(self, path: str | os.PathLike, recursive: bool = True) -> None:
+        """
+        Saves the current dataset to disk
+        :param path: (str or Path) path to the dataset or content in dataset
+        :param recursive: step recursively into subdatasets
+        :return: no return value
+        """
+        path = Path(path).resolve()
+        ds_root, rel = self.find_dataset_root_and_rel(path)
+
+        if str(rel) == '.':
+            # save dataset
+            dl.save(dataset=str(ds_root), recursive=recursive)
+        else:
+            # just save content, if path is not related to a subdataset
+            dl.save(path=str(path), recursive=False)
+
     def save_current_dm_configuration(self):
         """
-        Persist the current data manager configuration to disk.
+        Save the current data manager configuration to disk.
         """
         dmc.save_persistent_cfg({
             "dm_root": self.cfg.dm_root,

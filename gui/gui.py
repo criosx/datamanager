@@ -6,11 +6,11 @@ import sys
 
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QThreadPool, QObject, Signal, Slot, QRunnable, QDir
+from PySide6.QtCore import Qt, QThreadPool, Slot, QDir
 from PySide6.QtGui import QPalette, QAction, QColor
 from PySide6.QtWidgets import (
-    QAbstractItemView, QApplication, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFileSystemModel,
-    QFormLayout, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem,
+    QAbstractItemView, QApplication, QComboBox, QDialog, QFileDialog, QFileSystemModel,
+    QHBoxLayout, QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem,
     QMainWindow, QMenu, QMessageBox, QPlainTextEdit, QPushButton, QTreeView, QSplitter, QStatusBar, QToolBar,
     QVBoxLayout, QWidget
 )
@@ -42,15 +42,7 @@ class MainWindow(QMainWindow):
         self._create_menubar()
         self._create_split_view()
 
-        # bootstrap DM
-        self.bootstrap_datamanager()
-
-        # state for current metadata context
-        self.meta_current_ds_root: Path | None = None
-        self.meta_current_rel: str | None = None  # posix path or None for dataset
-        self.meta_current_payload: dict | None = None  # extracted_metadata being edited
-
-        # Redirect stdout
+        # --- Redirect stdout/stderr FIRST ---
         self.stdout_redirect = EmittingStream()
         self.stdout_redirect.textWritten.connect(self.logviewer_append_text)
         sys.stdout = self.stdout_redirect
@@ -59,15 +51,30 @@ class MainWindow(QMainWindow):
         # --- Redirect Logging to GUI ---
         log_handler = GuiLogHandler()
         log_handler.textWritten.connect(self.logviewer_append_text)
-        # Set format (optional, matches standard log output)
-        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+        formatter = logging.Formatter(
+            '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        )
         log_handler.setFormatter(formatter)
 
-        # Get the root logger and add our handler
+        # Attach handler ONLY to the root logger
         root_logger = logging.getLogger()
         root_logger.addHandler(log_handler)
-        # Set minimum logging level to capture (e.g., INFO, WARNING, DEBUG)
         root_logger.setLevel(logging.INFO)
+
+        # Configure datalad logger to propagate upwards
+        dl_logger = logging.getLogger('datalad')
+        dl_logger.setLevel(logging.INFO)
+        dl_logger.propagate = True  # let records bubble up to root
+        # do not add log_handler here
+        # dl_logger.addHandler(log_handler)
+
+        # bootstrap DM
+        self.bootstrap_datamanager()
+
+        # state for current metadata context
+        self.meta_current_ds_root: Path | None = None
+        self.meta_current_rel: str | None = None  # posix path or None for dataset
+        self.meta_current_payload: dict | None = None  # extracted_metadata being edited
 
     def _choose_browser_root(self):
         path = QFileDialog.getExistingDirectory(self, "Select folder to browse")
@@ -99,11 +106,9 @@ class MainWindow(QMainWindow):
         act_clone_from_GIN.triggered.connect(self.clone_from_gin)
         remote_menu.addAction(act_clone_from_GIN)
 
-        act_publish_all_GIN = QAction("Create new repo at GIN", self)
-        act_publish_all_GIN.triggered.connect(self.dm_publish_new_to_remote_all)
+        act_publish_all_GIN = QAction("Create new GIN repo", self)
+        act_publish_all_GIN.triggered.connect(self.dm_publish_new_repository_to_GIN_remote)
         remote_menu.addAction(act_publish_all_GIN)
-
-
 
     def _create_split_view(self):
         splitter = QSplitter()
@@ -184,6 +189,7 @@ class MainWindow(QMainWindow):
         self.dm_list.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.dm_list.setContextMenuPolicy(Qt.CustomContextMenu)
         self.dm_list.customContextMenuRequested.connect(self._dm_context_menu)
+        self.dm_list.setSortingEnabled(True)
         dm_layout.addWidget(self.dm_list, 1)
 
         splitter.addWidget(self.dm_panel)
@@ -344,42 +350,9 @@ class MainWindow(QMainWindow):
             self.dm_refresh_panel()
         # else: it's a file/symlink — ignore or handle later (open in Finder, fetch annex, etc.)
 
-    def _find_dataset_root_and_rel(self, path: Path) -> tuple[Path | None, Path | None]:
-        """
-        Walk up from `path` until we find a directory containing a dataset.
-        Returns (ds_root, relpath_within_dataset) or (None, None) if not found.
-        If `path` *is* the dataset root, relpath is Path('.').
-        """
-
-        if not path.exists():
-            return None, None
-
-        # if it's a file/symlink, start from parent when searching dataset root
-        search_from = path if path.is_dir() else path.parent
-
-        # climb up until DM root
-        dm_root = Path(self.dm.cfg.dm_root) if self.dm else None
-        p = search_from
-        while True:
-            if p.is_dir() and self._is_dataset_dir(p):
-                ds_root = p
-                # rel path is relative to ds_root; for the dataset itself, use '.'
-                rel = Path("../roadmap_datamanager") if path == ds_root else path.relative_to(ds_root)
-                return ds_root, rel
-            if dm_root and (p == dm_root or p == dm_root.parent):
-                break
-            if p.parent == p:
-                break
-            p = p.parent
-        return None, None
-
     def _go_home(self):
         home = QDir.homePath()
         self.fs_tree.setRootIndex(self.fs_model.index(home))
-
-    @staticmethod
-    def _is_dataset_dir(p: Path) -> bool:
-        return (p / ".datalad").exists() or (p / ".git").exists()
 
     def _run_in_worker(self, fn, *args, **kwargs):
         worker = Worker(fn, *args, **kwargs)
@@ -400,7 +373,7 @@ class MainWindow(QMainWindow):
 
         paths2 = []
         for p in paths:
-            ds_root, rel = self._find_dataset_root_and_rel(p)
+            ds_root, rel = self.dm.find_dataset_root_and_rel(p)
             if ds_root is None or rel is None:
                 continue
             rel_str = "." if rel == Path("../roadmap_datamanager") else rel.as_posix()
@@ -538,11 +511,15 @@ class MainWindow(QMainWindow):
             return
         for ds_root, rel_str in paths:
             p = str(ds_root) + ':' + str(rel_str)
+            if rel_str == '.':
+                path = None
+            else:
+                path = str(Path(ds_root) / Path(rel_str))
             try:
                 self._run_in_worker(
                     self.dm.get_data,
                     dataset=str(ds_root),
-                    path=rel_str,
+                    path=path,
                     recursive=recursive
                 )
                 self.logviewer_append_text(f"[INFO] Got content: {p}\n")
@@ -570,7 +547,22 @@ class MainWindow(QMainWindow):
             self.dm_current_path = p
             self.dm_refresh_panel()
 
-    def dm_publish_new_to_remote_all(self):
+    def dm_publish_new_repository_to_GIN_remote(self):
+        if self.dm is None or self.dm_current_path is None:
+            return
+
+        ret = QMessageBox.question(
+            self,
+            "New GIN Repository",
+            f"Create new GIN repository? This will break dependencies for clones of any exisiting repository.",
+            QMessageBox.Yes | QMessageBox.No
+        )
+        if ret != QMessageBox.Yes:
+            return
+
+        # remove all known remote siblings
+        self.dm.remove_siblings(path=self.dm.cfg.dm_root, name='gin', recursive=True)
+        self.dm.remove_siblings(path=self.dm.cfg.dm_root, name='origin', recursive=True)
         self.dm_publish_to_remote(entire_tree=True, existing='reconfigure')
 
     def dm_publish_to_remote(self, entire_tree=False, existing='skip'):
@@ -676,7 +668,7 @@ class MainWindow(QMainWindow):
         item = self.dm_list.currentItem()
         target_path = Path(item.data(Qt.UserRole)) if item else self.dm_current_path
 
-        ds_root, rel = self._find_dataset_root_and_rel(target_path)
+        ds_root, rel = self.dm.find_dataset_root_and_rel(target_path)
         if ds_root is None:
             self.meta_title.setText("Metadata: —")
             self.meta_view.setPlainText("No enclosing dataset found for this selection.")
@@ -770,7 +762,13 @@ class MainWindow(QMainWindow):
                     dataset=ds_root,
                     recursive=True
                 )
-                self.logviewer_append_text(f"[INFO] GIN published content: {p}\n")
+                self.logviewer_append_text(f"[INFO] Updated remote content: {p}\n")
+                self._run_in_worker(
+                    self.dm.save,
+                    path=ds_root,
+                    recursive=True
+                )
+                self.logviewer_append_text(f"[INFO] Saved updated remote content: {p}\n")
             except Exception as e:
                 self.logviewer_append_text(f"[WARN] Could not GIN publish {p}: {e}\n")
 

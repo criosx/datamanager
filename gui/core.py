@@ -1,19 +1,11 @@
 from __future__ import annotations
 
-import json
 import logging
 import sys
 
-from pathlib import Path
-
-from PySide6.QtCore import Qt, QThreadPool, QObject, Signal, Slot, QRunnable, QDir
-from PySide6.QtGui import QPalette, QAction, QColor
-from PySide6.QtWidgets import (
-    QAbstractItemView, QApplication, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFileSystemModel,
-    QFormLayout, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem,
-    QMainWindow, QMenu, QMessageBox, QPlainTextEdit, QPushButton, QTreeView, QSplitter, QStatusBar, QToolBar,
-    QVBoxLayout, QWidget
-)
+from PySide6.QtCore import Qt, QObject, Signal, QRunnable
+from PySide6.QtGui import QPalette, QColor
+from PySide6.QtWidgets import QDialog, QDialogButtonBox, QFormLayout, QLineEdit
 
 
 def create_light_palette():
@@ -40,6 +32,25 @@ def create_light_palette():
     p.setColor(QPalette.Disabled, QPalette.Button, QColor(230, 230, 230))
     p.setColor(QPalette.Disabled, QPalette.ButtonText, QColor(150, 150, 150))
     return p
+
+
+class EmittingStream(QObject):
+    textWritten = Signal(str)
+
+    def write(self, text):
+        self.textWritten.emit(str(text))
+        # in addition, write to the original stdout to see console output
+        sys.__stdout__.write(text)
+        self.flush()    # Ensure immediate output
+
+    def flush(self):
+        # Required for file-like objects, but can be empty for this use case
+        pass
+
+    @staticmethod
+    def isatty():
+        # Returns False, as this is not a TTY device.
+        return False
 
 
 class FirstRunDialog(QDialog):
@@ -94,21 +105,3 @@ class WorkerSignals(QObject):
     error = Signal(str)
     progress = Signal(str)
 
-
-class EmittingStream(QObject):
-    textWritten = Signal(str)
-
-    def write(self, text):
-        self.textWritten.emit(str(text))
-        # in addition, write to the original stdout to see console output
-        sys.__stdout__.write(text)
-        self.flush()    # Ensure immediate output
-
-    def flush(self):
-        # Required for file-like objects, but can be empty for this use case
-        pass
-
-    @staticmethod
-    def isatty():
-        # Returns False, as this is not a TTY device.
-        return False
