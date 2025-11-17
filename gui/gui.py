@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
 )
 
 from roadmap_datamanager.datamanager import DataManager, ALLOWED_CATEGORIES
+from roadmap_datamanager.helpers import find_dataset_root_and_rel
 
 from remote import GinRemoteDialog
 from core import create_light_palette
@@ -373,7 +374,7 @@ class MainWindow(QMainWindow):
 
         paths2 = []
         for p in paths:
-            ds_root, rel = self.dm.find_dataset_root_and_rel(p)
+            ds_root, rel = find_dataset_root_and_rel(p, self.dm.cfg.dm_root)
             if ds_root is None or rel is None:
                 continue
             rel_str = "." if rel == Path("../roadmap_datamanager") else rel.as_posix()
@@ -668,7 +669,7 @@ class MainWindow(QMainWindow):
         item = self.dm_list.currentItem()
         target_path = Path(item.data(Qt.UserRole)) if item else self.dm_current_path
 
-        ds_root, rel = self.dm.find_dataset_root_and_rel(target_path)
+        ds_root, rel = find_dataset_root_and_rel(target_path, self.dm.cfg.dm_root)
         if ds_root is None:
             self.meta_title.setText("Metadata: —")
             self.meta_view.setPlainText("No enclosing dataset found for this selection.")
@@ -677,11 +678,8 @@ class MainWindow(QMainWindow):
             self.meta_current_payload = None
             return
 
-        # Prepare args for load_meta()
-        rel_arg = None if rel == Path("../roadmap_datamanager") else rel.as_posix()
-
         try:
-            payload = self.dm.load_meta(ds_path=ds_root, path=rel_arg, return_='payload', raise_on_missing=False)
+            payload = self.dm.load_meta(ds_path=ds_root, path=rel)
         except ValueError as e:
             self.meta_title.setText(f"Metadata: {target_path.name}")
             self.meta_view.setPlainText(f"Error while reading metadata:\n{e}")
@@ -691,11 +689,11 @@ class MainWindow(QMainWindow):
             return
 
         self.meta_current_ds_root = ds_root
-        self.meta_current_rel = rel_arg
+        self.meta_current_rel = rel
         # if nothing yet, start from empty dict to allow adding
         self.meta_current_payload = dict(payload) if payload else {}
 
-        title_name = target_path.name if rel_arg else f"{ds_root.name} (dataset)"
+        title_name = target_path.name if rel else f"{ds_root.name} (dataset)"
         self.meta_title.setText(f"Metadata: {title_name}")
 
         if self.meta_current_payload:

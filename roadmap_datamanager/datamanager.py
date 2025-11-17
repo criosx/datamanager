@@ -3,12 +3,10 @@ from __future__ import annotations
 
 import os
 import shutil
-import subprocess
 
-from datalad.support.exceptions import IncompleteResultsError
-from datetime import datetime, timezone
-from pathlib import Path, PurePosixPath
-from typing import Optional, Dict, Any, Callable, List, Literal, Iterable
+from datetime import datetime
+from pathlib import Path
+from typing import Optional, Dict, Any
 
 # DataLad Python API
 from datalad import api as dl
@@ -16,7 +14,8 @@ from datalad.distribution.dataset import Dataset
 
 # ROADMAP datamanager modules
 from roadmap_datamanager import configuration as dmc
-from roadmap_datamanager.helpers import ssh_to_https
+from roadmap_datamanager.helpers import ssh_to_https, ensure_paths, find_dataset_root_and_rel
+from roadmap_datamanager import metadata as md
 
 
 #  Install policy
@@ -44,7 +43,6 @@ class DataManager:
         verbose: bool = True,
         env: Optional[Dict[str, str]] = None,
         register_existing: bool = True,
-        now_fn: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
         GIN_url: Optional[str] = None,
         GIN_repo: Optional[str] = None,
         GIN_user: Optional[str] = None
@@ -81,7 +79,6 @@ class DataManager:
             verbose=verbose,
             env=env or {},
             register_existing=register_existing,
-            now_fn=now_fn,
             GIN_url=eff_GIN_url,
             GIN_repo=eff_GIN_repo,
             GIN_user=eff_GIN_user
@@ -126,16 +123,6 @@ class DataManager:
             GIN_user=persisted.get("GIN_user")
         )
 
-    @staticmethod
-    def _get_dataset_version(ds: Dataset) -> str:
-        try:
-            return ds.repo.get_hexsha()
-        except IncompleteResultsError:
-            # ensure at least one commit by touching .gitignore and saving
-            (Path(ds.path) / ".gitignore").touch(exist_ok=True)
-            dl.save(dataset=str(ds.path), path=[str(Path(ds.path) / ".gitignore")], message="Initial commit (auto)")
-            return ds.repo.get_hexsha()
-
     def _ensure_dataset(self, path: Path, node_type, name, superds: Optional[Path]) -> None:
         """
         If dataset at `path` exists, (optionally) ensure it's registered in `superds`.
@@ -167,23 +154,6 @@ class DataManager:
             # create and register as subdataset of superds in one API call
             dl.create(path=str(path), dataset=str(superds), cfg_proc=self.cfg.datalad_profile)
         self.save_meta(path, name=name, node_type=node_type)
-
-    def _get_dataset_id(self, ds: Dataset) -> str:
-        # Prefer DataLad property; fallback to reading .datalad/config via Git if needed
-        if getattr(ds, "id", None):
-            return ds.id
-        # Rare fallback
-        p = subprocess.run(
-            ["git", "-C", ds.path, "config", "-f", str(Path(ds.path) / ".datalad/config"),
-             "datalad.dataset.id"], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=self._proc_env()
-        )
-        if p.returncode == 0 and p.stdout.strip():
-            return p.stdout.strip()
-        raise RuntimeError(f"Could not read dataset id in {ds.path}")
-
-    @staticmethod
-    def _is_dataset_dir(p: Path) -> bool:
-        return (p / ".datalad").exists() or (p / ".git").exists()
 
     @staticmethod
     def _parse_iso(ts: str) -> datetime:
@@ -257,35 +227,6 @@ class DataManager:
         content_path = Path(dataset) / Path(path)
         dl.drop(dataset=str(dataset), path=content_path, recursive=recursive, what='filecontent')
 
-    def find_dataset_root_and_rel(self, path: Path) -> tuple[Path | None, Path | None]:
-        """
-        Walk up from `path` until we find a directory containing a dataset.
-        Returns (ds_root, relpath_within_dataset) or (None, None) if not found.
-        If `path` *is* the dataset root, relpath is Path('.').
-        """
-
-        if not (path.exists() or path.is_symlink()):
-            return None, None
-
-        # if it's a file/symlink, start from parent when searching dataset root
-        search_from = path if path.is_dir() else path.parent
-
-        # climb up until DM root
-        dm_root = Path(self.cfg.dm_root)
-        p = search_from
-        while True:
-            if p.is_dir() and self._is_dataset_dir(p):
-                ds_root = p
-                # rel path is relative to ds_root; for the dataset itself, use '.'
-                rel = path.relative_to(ds_root)
-                return ds_root, rel
-            if dm_root and (p == dm_root or p == dm_root.parent):
-                break
-            if p.parent == p:
-                break
-            p = p.parent
-        return None, None
-
     @staticmethod
     def get_data(dataset: str | os.PathLike, path: str | os.PathLike | list[str | os.PathLike] | None = None,
                  recursive: bool = False) -> None:
@@ -344,68 +285,6 @@ class DataManager:
                   f"{self.cfg.user_name}/" + "/".join(x for x in (project, campaign, experiment) if x))
 
         return ep
-
-    def extract_meta(self, ds_path: str | Path, *, path: str | Path | None = None) -> List[Dict[str, Any]]:
-        """
-        Yield metadata envelopes from MetaLad for a dataset/file/folder already present in the DataLad tree, newest
-        first. Filters to this dataset's id, the given relpath, and the extractor_name
-        (default: self.cfg.extractor_name). Set include_nonmatching=True to see everything returned by meta_dump for
-        debugging.
-        :param ds_path: (str, os.PathLike) path to the dataset to iterate over
-        :param path: (str, os.PathLike) relative path to the dataset component to iterate over
-        :return: list of applicable metadata entries, newest first
-        """
-        def _match(env: Dict[str, Any], ds_path, relposix) -> bool:
-            meta = env.get("extracted_metadata", {})
-            rel = meta.get("extraction_parameter", {}).get("path")
-
-            if rel is None:
-                # Fallback: try to derive a relative path from the absolute env['path']
-                p = Path(env.get("path", ""))
-                if isinstance(p, Path) and p.is_absolute():
-                    try:
-                        rel = str(p.relative_to(ds_path))
-                    except Exception:
-                        return False
-                else:
-                    rel = str(p) if p else None
-
-            # Normalize: dataset itself is '.' (your code uses that convention)
-            if rel in (None, ""):
-                rel = "."
-
-            return rel == relposix
-
-        ds_path = Path(ds_path)
-        ds = Dataset(ds_path)
-        if not ds.is_installed():
-            raise RuntimeError(f"Dataset not installed at {ds_path}")
-
-        if path is None:
-            relposix = "."
-        else:
-            path = Path(path)
-            if path.is_absolute():
-                path = path.relative_to(ds_path)
-            relposix = '.' if path == Path() else str(PurePosixPath(*path.parts))
-
-        # Try to let meta_dump do some filtering; still filter in Python for safety.
-        try:
-            res: List[Dict[str, Any]] = dl.meta_dump(
-                dataset=str(ds_path),
-                # Some MetaLad versions accept 'path' for filtering; keep it if available.
-                path=relposix,
-                return_type='list',
-                result_renderer='disabled',
-                recursive=True
-            )
-        except IncompleteResultsError as e:
-            raise RuntimeError(f"meta-dump failed for {ds_path}: {e}") from e
-
-        # Filter & sort newest first by extraction_time
-        filtered = [env for env in res if _match(env, ds_path, relposix)]
-        filtered.sort(key=lambda d: self._parse_iso(d.get("metadata", {}).get("extraction_time", "")), reverse=True)
-        return filtered
 
     def install_into_tree(self, source: os.PathLike | str, *, project: Optional[str], campaign: Optional[str],
                           experiment: str, category: str, dest_rel: Optional[os.PathLike | str] = None,
@@ -487,39 +366,19 @@ class DataManager:
 
         return final_target
 
-    def load_meta(self, ds_path: str | Path, *, path: str | Path | None = None, extractor_name: Optional[str] = None,
-                  return_: Literal['payload', 'envelope'] = 'payload', raise_on_missing: bool = True) \
-            -> Optional[Dict[str, Any]]:
+    @staticmethod
+    def load_meta(ds_path: str | Path, *, path: str | Path | None = None, mode: str = 'meta') -> Dict[str, Any]:
         """
-        Return the latest metadata for `path` in `ds_path` produced by the configured extractor
-        (or the one you pass in).
-
-        :param ds_path: (str | Path) Dataset root
-        :param path: (str | Path | None) Relative path inside dataset; None or '' means the dataset itself
-        :param extractor_name: (Optional[str]) Filter to this extractor (default: self.cfg.extractor_name)
-        :param return_: {'payload','envelope'} 'payload' returns the JSON-LD object from 'extracted_metadata',
-        'envelope' returns the top-level envelope saved via meta_add
-        :param raise_on_missing: (bool) If True, raise when nothing is found; otherwise return None.
-        :return: (dict | None) metadata extracted from `ds_path`
+        Return the metadata for `path` in `ds_path`.
+        :param ds_path: (str, os.PathLike) path to the dataset to iterate over
+        :param path: (str, os.PathLike) relative path to the dataset component to iterate over
+        :param mode: (str) 'envelope' to obtain entire recore, 'meta' to obtain only the actual payload
+        :return: metadata dict
         """
-
-        meta = self.extract_meta(ds_path, path=path)
-
-        if meta is None or not meta:
-            if raise_on_missing:
-                if path is None:
-                    path = ''
-                raise LookupError(
-                    f"No metadata found in {ds_path} for '{path}'"
-                )
-            return None
-
-        if return_ == 'envelope':
-            return meta[0]
-        elif return_ == 'payload':
-            return meta[0].get("metadata", {}).get('extracted_metadata', {})
-        else:
-            raise ValueError("return_ must be 'payload' or 'envelope'")
+        ds_path, path, absolute_path, relposix = ensure_paths(ds_path, path)
+        meta = md.Metadata(ds_path, path)
+        record = meta.get(mode=mode)
+        return record
 
     def publish_lazy_to_remote(self, *, sibling_name: str = "gin", repo_name: str = "datamanager", dataset=None,
                                access_protocol: str = "ssh", credential: Optional[str] = None,
@@ -538,7 +397,6 @@ class DataManager:
 
         # climb until you find an ancestor with the target sibling, or root
         ds_path = start_path
-        chosen = None
         while True:
             ds = Dataset(str(ds_path))
             if not ds.is_installed():
@@ -587,6 +445,8 @@ class DataManager:
         # Save narrowly (only where needed) before the push, but OK to be simple here
         Dataset(str(chosen)).save(recursive=True, message=message or "Publish subtree")
 
+        # This should be unnecessary, as pushing is done by publish_gin_sibling()
+        """
         # Push once, recursively, to the chosen remote name
         self.push_to_remotes(
             dataset=str(chosen),
@@ -594,12 +454,17 @@ class DataManager:
             message=message,
             sibling_name=sibling_name_arg
         )
+        """
 
     def publish_gin_sibling(self, *, sibling_name: str = "gin", repo_name: str = "datamanager", dataset=None,
                             access_protocol: str = "ssh", credential: Optional[str] = None, private: bool = False,
                             recursive: bool = False, existing: str = 'skip') -> None:
         """
         Creates and pushes a gin sibling dataset to {repo_name}.
+        Important Note: The operation must be started from root or a dataset that has already a gin sibling. This is
+        to ensure consistent registration of gin siblings throughout the entire tree. If that becomes undesirable,
+        we have to implement explicit registration of the reference data set to its parent, if it exists (and
+        possibly register the parent to its parent, and so on).
 
         :param sibling_name: sibling name to publish
         :param repo_name: name of the GIN repository
@@ -683,7 +548,7 @@ class DataManager:
                 )
 
         ds.save(recursive=recursive, message='GIN publishing')
-        ds.push(to=sibling_name, recursive=recursive, data='auto')
+        ds.push(to=sibling_name, recursive=recursive, data='anything')
 
         if self.cfg.verbose:
             print(
@@ -742,25 +607,26 @@ class DataManager:
         :param recursive: (bool) whether to recursively step into subdatasets
         :return: no return value
         """
-        path = Path(path).resolve()
-        dl.siblings(action='remove', path=path, name=name, recursive=recursive)
+        path = str(Path(path).resolve())
+        dl.siblings(action='remove', dataset=path, name=name, recursive=recursive)
 
-    def save(self, path: str | os.PathLike, recursive: bool = True) -> None:
+    def save(self, path: str | os.PathLike, recursive: bool = True, message: str = None) -> None:
         """
         Saves the current dataset to disk
         :param path: (str or Path) path to the dataset or content in dataset
-        :param recursive: step recursively into subdatasets
+        :param recursive: (bool) step recursively into subdatasets
+        :param message: (str) optional commit message
         :return: no return value
         """
         path = Path(path).resolve()
-        ds_root, rel = self.find_dataset_root_and_rel(path)
+        ds_root, rel = find_dataset_root_and_rel(path, dm_root=self.cfg.dm_root)
 
         if str(rel) == '.':
             # save dataset
-            dl.save(dataset=str(ds_root), recursive=recursive)
+            dl.save(dataset=str(ds_root), recursive=recursive, message=message)
         else:
             # just save content, if path is not related to a subdataset
-            dl.save(path=str(path), recursive=False)
+            dl.save(path=str(path), recursive=False, message=message)
 
     def save_current_dm_configuration(self):
         """
@@ -790,101 +656,30 @@ class DataManager:
                            defaults to 'experiment' the lowest level node
         :return: None
         """
-        ds_path = Path(ds_path)
-        ds = Dataset(ds_path)
-        if not ds.is_installed():
-            raise RuntimeError(f"Dataset not installed at {ds_path}")
 
-        # Ensure rel_path is relative and normalized to POSIX for stable identifiers
-        if path is None:
-            path = Path()
-        else:
-            path = Path(path)
-        if path.is_absolute():
-            raise ValueError(f"rel_path must be relative to {ds_path}, got absolute: {path}")
+        meta = md.Metadata(ds_root=ds_path, path=path)
+        meta.add(
+            payload=extra,
+            mode='overwrite',
+            node_type=node_type,
+            name=name,
+            user_email=self.cfg.user_email,
+            user_name=self.cfg.user_name,
+            extractor_name=self.cfg.extractor_name,
+            extractor_version=self.cfg.extractor_version,
+        )
+        meta.save()
+        targetstr = str(path) if path is not None else str(ds_path)
 
-        # POSIX-normalized relative path string, '' for dataset itself
-        relposix = '.' if path == Path() else str(PurePosixPath(*path.parts))
-
-        # Working tree probe (only if materialized); use dataset root when rel_path is empty
-        item_path = ds_path if relposix == '.' else (ds_path / path)
-
-        dataset_id = self._get_dataset_id(ds)
-        dataset_version = self._get_dataset_version(ds)
-        extraction_time = self.cfg.now_fn().replace(microsecond=0).isoformat()
-
-        # Choose a Schema.org type
-        if relposix == '.':
-            type_str = "dataset"
-        elif item_path.exists() and item_path.is_dir():
-            type_str = "Collection"
-        else:
-            type_str = "CreativeWork"
-
-        # Empty relpath identifies the dataset itself
-        if relposix != '.':
-            node_id = f"datalad:{node_type}{dataset_id}:{relposix}"
-            toplevel_type = 'file'
-        else:
-            node_id = f"datalad:{node_type}{dataset_id}"
-            toplevel_type = 'dataset'
-
-        # Interpret this JSON object as a Schema.org entity, so that name, description, etc., have their
-        # standardized meanings.
-        extracted: Dict[str, Any] = {
-            "@context": {
-                "@vocab": "https://schema.org/",
-                "dm": "https://your-vocab.example/terms/"
-            },
-            "@type": type_str,
-            "@id": node_id,
-            "identifier": relposix,  # machine ID (relative path)
-        }
-        # Only include a human-facing name if you have one
-        if name:
-            extracted["name"] = name
-
-        if extra:
-            extracted.update(extra)
-
-        # The extractor is the current script, as metadata is manually provided when installing a file or folder
-        # This is the toplevel metadata record envelope, which contains the extracted metadata as a nested subfield
-        # All according to the JSON-LD schema
-        payload = {
-            "type": toplevel_type,
-            "extractor_name": self.cfg.extractor_name,
-            "extractor_version": self.cfg.extractor_version,
-            "extraction_parameter": {
-                "path": relposix,
-                "node_type": node_type
-            },
-            "extraction_time": extraction_time,
-            "agent_name": self.cfg.user_name,
-            "agent_email": self.cfg.user_email,
-            "dataset_id": dataset_id,
-            "dataset_version": dataset_version,
-            "path": relposix,
-            "extracted_metadata": extracted
-        }
-
-        try:
-            if self.cfg.verbose:
-                print(f"Adding metadata to dataset {ds_path} for {relposix}")
-                print(f"Payload:")
-                print(payload)
-            _ = dl.meta_add(metadata=payload, dataset=str(ds_path), allow_id_mismatch=False, json_lines=False,
-                            batch_mode=False, on_failure='stop', return_type='list')
-        except IncompleteResultsError as e:
-            where = f"{item_path}"
-            raise RuntimeError(f"meta-add failed for {where}: {e}") from e
-
-        # Commit metadata; scope to metadata dir to keep the commit tight
-        meta_dir = Path(ds_path) / ".datalad" / "metadata"
+        # Commit metadata
         dl.save(
             dataset=str(ds_path),
-            path=str(meta_dir) if meta_dir.exists() else None,
-            message=f"scidata: metadata for {item_path}",
+            message=f"Metadata for {targetstr}",
         )
+        if self.cfg.verbose:
+            print(f"Added metadata to dataset {targetstr}")
+            print(f"Payload:")
+            print(extra)
 
     @staticmethod
     def remove_from_tree(dataset: str | os.PathLike, path: str | os.PathLike = None, recursive: bool = False,
