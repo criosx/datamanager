@@ -14,6 +14,7 @@ from pathlib import Path, PurePosixPath
 
 from roadmap_datamanager.datamanager import DataManager
 from roadmap_datamanager.helpers import set_git_annex_path
+from roadmap_datamanager.metadata import Metadata
 
 from typing import ClassVar
 from urllib.parse import urlparse
@@ -93,32 +94,20 @@ def has_meta(ds: Path, *, rel_path: Path, node_type: str) -> bool:
         node_id = f"datalad:{node_type}{dataset_id}"
 
     try:
-        # If you want to narrow by a file/folder, pass path=relposix (non-empty).
-        # For dataset-level records (relposix == ""), query without a path filter.
-        # Otherwise, use the recursive option to obtain all records
-        kwargs = dict(
-            dataset=str(ds),
-            return_type="list",
-            result_xfm="metadata",
-            on_failure="stop",
-            recursive=True
-        )
-        if relposix:
-            kwargs["path"] = relposix
-
-        records = dl.meta_dump(**kwargs)  # list of envelope dicts
-        # print("Retrieved records:", records)
-    except IncompleteResultsError:
-        # Treat a dump failure as "not found" (or re-raise if you prefer)
+        # If you want to narrow by a file/folder, pass path (non-empty).
+        # For dataset-level records (path = None, or path='.'), query without a path filter.
+        meta = Metadata(ds_root=ds, path=relposix)
+        records = meta.get(mode='envelope')  # list of envelope dicts
+        print("Retrieved records:", records)
+    except ValueError:
         return False
 
-    for obj in records:
-        if (
-                obj.get("extractor_name") == "datamanager_v1"
-                and obj.get("extracted_metadata", {}).get("@id") == node_id
-                and obj.get("extracted_metadata", {}).get("identifier") == relposix
-        ):
-            return True
+    if (
+            records.get("extractor_name") == "datamanager_v1"
+            and records.get("extracted_metadata", {}).get("@id") == node_id
+            and records.get("extracted_metadata", {}).get("identifier") == relposix
+    ):
+        return True
     return False
 
 

@@ -51,7 +51,7 @@ class Metadata:
 
         # Choose a Schema.org type
         if self.relposix == '.':
-            type_str = "dataset"
+            type_str = "Dataset"
         elif self.absolute_path.exists() and self.absolute_path.is_dir():
             type_str = "Collection"
         else:
