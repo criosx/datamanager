@@ -136,7 +136,7 @@ class DataManager:
         ds = Dataset(str(path))
 
         if ds.is_installed():
-            if superds and self.cfg.register_existing:
+            if superds is not None and self.cfg.register_existing:
                 # If already registered, this is a no-op (status=notneeded)
                 dl.save(
                     dataset=str(superds),
@@ -148,10 +148,17 @@ class DataManager:
         # Create (and register if superds is provided)
         if superds is None:
             # top-level dataset
+            # merge any remote changes into superdataset before committing local changes
             dl.create(path=str(path), cfg_proc=self.cfg.datalad_profile)
         else:
             # create and register as subdataset of superds in one API call
+            # merge any remote changes into superdataset before committing local changes
+            dl.update(dataset=superds, recursive=False, how='merge')
             dl.create(path=str(path), dataset=str(superds), cfg_proc=self.cfg.datalad_profile)
+            dl.save(dataset=superds, recursive=False)
+
+        # dataset save here is not necessary, as it is saved in save_meta
+        # dl.save(dataset=str(path), recursive=False, message=f"Initialized dataset.")
         self.save_meta(path, name=name)
 
     @staticmethod
@@ -193,7 +200,7 @@ class DataManager:
             raise RuntimeError(f"Destination path {dest} must be empty.")
 
         if source_url_root is None:
-            source_url_root = f"https://gin.g-node.org/"
+            source_url_root = f"git@gin.g-node.org:/"
 
         if user is None:
             user = getattr(self.cfg, "GIN_user", None)
@@ -276,9 +283,6 @@ class DataManager:
         if ep:
             self._ensure_dataset(ep, superds=cp, name=experiment)
 
-        # Record state at the top-level, recursing into registered subs
-        dl.save(dataset=str(up), recursive=True,
-                message=f"Initialized tree for {self.cfg.user_name}/{project or ''}/{campaign or ''}")
         if self.cfg.verbose:
             print(f"Initialized/verified tree at {up} for "
                   f"{self.cfg.user_name}/" + "/".join(x for x in (project, campaign, experiment) if x))
