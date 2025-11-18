@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import sys
 
-from PySide6.QtCore import Qt, QObject, Signal, QRunnable
+from PySide6.QtCore import Qt, QObject, Signal, Slot, QRunnable
 from PySide6.QtGui import QPalette, QColor
 from PySide6.QtWidgets import QDialog, QDialogButtonBox, QFormLayout, QLineEdit
 
@@ -92,7 +92,9 @@ class Worker(QRunnable):
         self.kwargs = kwargs
         self.signals = WorkerSignals()
 
+    @Slot()
     def run(self):
+        self.signals.started.emit()
         try:
             out = self.fn(*self.args, **self.kwargs)
             self.signals.done.emit(out)
@@ -101,6 +103,7 @@ class Worker(QRunnable):
 
 
 class WorkerSignals(QObject):
+    started = Signal()
     done = Signal(object)
     error = Signal(str)
     progress = Signal(str)

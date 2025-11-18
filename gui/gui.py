@@ -11,8 +11,8 @@ from PySide6.QtGui import QPalette, QAction, QColor
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QComboBox, QDialog, QFileDialog, QFileSystemModel,
     QHBoxLayout, QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem,
-    QMainWindow, QMenu, QMessageBox, QPlainTextEdit, QPushButton, QTreeView, QSplitter, QStatusBar, QToolBar,
-    QVBoxLayout, QWidget
+    QMainWindow, QMenu, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QTreeView, QSplitter, QStatusBar,
+    QToolBar, QVBoxLayout, QWidget
 )
 
 from roadmap_datamanager.datamanager import DataManager, ALLOWED_CATEGORIES
@@ -76,6 +76,18 @@ class MainWindow(QMainWindow):
         self.meta_current_ds_root: Path | None = None
         self.meta_current_rel: str | None = None  # posix path or None for dataset
         self.meta_current_payload: dict | None = None  # extracted_metadata being edited
+
+        # Track how many workers are currently running
+        self._active_workers = 0
+
+        # Busy indicator (can be anywhere: toolbar, layout, etc.)
+        self.busy_bar = QProgressBar(self)
+        self.busy_bar.setRange(0, 0)  # 0,0 = busy/indeterminate
+        self.busy_bar.setTextVisible(False)
+        self.busy_bar.setVisible(False)
+
+        # If you have a status bar:
+        self.statusBar().addPermanentWidget(self.busy_bar)
 
     def _choose_browser_root(self):
         path = QFileDialog.getExistingDirectory(self, "Select folder to browse")
@@ -355,14 +367,31 @@ class MainWindow(QMainWindow):
         home = QDir.homePath()
         self.fs_tree.setRootIndex(self.fs_model.index(home))
 
-    def _run_in_worker(self, fn, *args, **kwargs):
+    def _run_in_worker(self, fn, refresh='dm', *args, **kwargs):
+        """
+        Runs a function in a worker thread and refreshes the panel indicated by the refresh argument
+        :param fn: the function to run
+        :param refresh: (str) 'dm' (default) for the datamanager panel, 'mt' for the metadata panel
+        :param args: function argument
+        :param kwargs: keyword function arguments
+        :return: no return value
+        """
         worker = Worker(fn, *args, **kwargs)
         # pipe worker error to log
         worker.signals.error.connect(
             lambda msg: self.logviewer_append_text(f"[ERROR] {msg}\n")
         )
+
+        # Indicate when worker starts / finishes
+        worker.signals.started.connect(self._worker_started)
+        worker.signals.done.connect(self._worker_finished)
+        worker.signals.error.connect(lambda _msg: self._worker_finished())
+
         # Trigger widget update when worker is done
-        worker.signals.done.connect(self.dm_refresh_panel)
+        if refresh == 'dm':
+            worker.signals.done.connect(self.dm_refresh_panel)
+        elif refresh == 'mt':
+            worker.signals.done.connect(self.dm_show_selected_metadata)
         self.pool.start(worker)
 
     def _selected_dm_paths(self):
@@ -380,6 +409,19 @@ class MainWindow(QMainWindow):
             rel_str = "." if rel == Path("../roadmap_datamanager") else rel.as_posix()
             paths2.append((ds_root, rel_str))
         return paths2
+
+    def _worker_started(self):
+        self._active_workers += 1
+        if self._active_workers == 1:
+            self.busy_bar.setVisible(True)
+            # QApplication.setOverrideCursor(Qt.BusyCursor)
+
+    def _worker_finished(self):
+        if self._active_workers > 0:
+            self._active_workers -= 1
+        if self._active_workers == 0:
+            self.busy_bar.setVisible(False)
+            # QApplication.restoreOverrideCursor()
 
     @Slot(str)
     def apply_metadata_field(self):
@@ -403,7 +445,7 @@ class MainWindow(QMainWindow):
         self.meta_current_payload[key] = value
 
         # reflect changes in viewer immediately
-        self.meta_view.setPlainText(json.dumps(self.meta_current_payload, indent=2, ensure_ascii=False))
+        self.metadata_update_viewer()
         self.meta_value.clear()
 
     def bootstrap_datamanager(self):
@@ -672,7 +714,7 @@ class MainWindow(QMainWindow):
         ds_root, rel = find_dataset_root_and_rel(target_path, self.dm.cfg.dm_root)
         if ds_root is None:
             self.meta_title.setText("Metadata: —")
-            self.meta_view.setPlainText("No enclosing dataset found for this selection.")
+            self.metadata_update_viewer("No enclosing dataset found for this selection.")
             self.meta_current_ds_root = None
             self.meta_current_rel = None
             self.meta_current_payload = None
@@ -682,7 +724,7 @@ class MainWindow(QMainWindow):
             payload = self.dm.load_meta(ds_path=ds_root, path=rel)
         except ValueError as e:
             self.meta_title.setText(f"Metadata: {target_path.name}")
-            self.meta_view.setPlainText(f"Error while reading metadata:\n{e}")
+            self.metadata_update_viewer(f"Error while reading metadata:\n{e}")
             self.meta_current_ds_root = None
             self.meta_current_rel = None
             self.meta_current_payload = None
@@ -697,9 +739,9 @@ class MainWindow(QMainWindow):
         self.meta_title.setText(f"Metadata: {title_name}")
 
         if self.meta_current_payload:
-            self.meta_view.setPlainText(json.dumps(self.meta_current_payload, indent=2, ensure_ascii=False))
+            self.metadata_update_viewer()
         else:
-            self.meta_view.setPlainText("No metadata found. You can add fields below.")
+            self.metadata_update_viewer("No metadata found. You can add fields below.")
 
     def dm_remove_selected(self, reckless=False):
         paths = self._selected_dm_paths()
@@ -862,6 +904,9 @@ class MainWindow(QMainWindow):
         self.status.showMessage("Installed into subfolder of experiment.")
 
     def logviewer_append_text(self, text):
+        if 'INFO' in text and 'progress bar' in text:
+            # ignore progress bar messages
+            return
         self.log_view.insertPlainText(text)
         self.log_view.verticalScrollBar().setValue(
             self.log_view.verticalScrollBar().maximum())  # Scroll to bottom
@@ -934,14 +979,15 @@ class MainWindow(QMainWindow):
 
     def metadata_save_changes(self):
         """
-        Persist the current in-memory metadata payload to the dataset using DataManager.save_meta().
+        Save the current in-memory metadata payload to the dataset using DataManager.save_meta().
         Currently: writes a fresh metadata record for this (ds_root, rel) with the edited fields.
         """
         if self.dm is None:
             QMessageBox.information(self, "No datamanager", "No active datamanager.")
             return
         if self.meta_current_ds_root is None:
-            QMessageBox.information(self, "No selection", "Nothing to save. Select an item and load metadata first.")
+            QMessageBox.information(self, "No selection", "Nothing to save. Select an item and load metadata "
+                                                          "first.")
             return
         if self.meta_current_payload is None:
             QMessageBox.information(self, "No changes", "No metadata to save.")
@@ -957,19 +1003,29 @@ class MainWindow(QMainWindow):
         try:
             self._run_in_worker(
                 self.dm.save_meta,
+                refresh='mt',
                 ds_path=ds_root,
                 path=rel,
                 name=name,
-                extra=extra,
-                # node_type: keep default or infer later; default 'experiment' in your API is fine for now
+                extra=extra
             )
         except Exception as e:
             QMessageBox.critical(self, "Save failed", f"Could not save metadata:\n{e}")
+
+    def metadata_update_viewer(self, message: str = None):
+        """
+        Update the metadata viewer with current in-memory metadata.
+        :return: no return value
+        """
+        if message is not None:
+            self.meta_view.setPlainText(message)
             return
 
-        QMessageBox.information(self, "Metadata saved", "Metadata has been saved into the dataset.")
-        # reload to show canonical stored version
-        self.dm_show_selected_metadata()
+        meta = self.meta_current_payload
+        _ = meta.pop("@context", None)
+        _ = meta.pop("@id", None)
+        _ = meta.pop("@type", None)
+        self.meta_view.setPlainText(json.dumps(meta, indent=4, ensure_ascii=False))
 
     def set_datamanager(self, dm: DataManager):
         self.dm = dm

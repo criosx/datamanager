@@ -4,14 +4,14 @@ import json
 from pathlib import Path
 
 from datalad.distribution.dataset import Dataset
-from roadmap_datamanager.helpers import ensure_paths, get_dataset_version
+from roadmap_datamanager.helpers import ensure_paths, get_dataset_version, get_dataset_nodetype
 
 from datetime import datetime, timezone
 from typing import Dict, Any
 
 
 class Metadata:
-    def __init__(self, ds_root: str | Path, path: str | Path = None, ):
+    def __init__(self, ds_root: str | Path, dm_root: str | Path, path: str | Path = None):
         """
         Metadata class initializer.
         :param path: Relative or absolute path to file for which we consider the metadata.
@@ -26,13 +26,13 @@ class Metadata:
 
         self.path_key = self.relposix
         self.ds = Dataset(self.ds_root)
+        self.dm_root = Path(dm_root)
 
     def save(self):
         self.metapath.write_text(json.dumps(self.meta, indent=4))
 
     def add(self, payload: dict, mode: str = 'overwrite', user_name: str | None = None, user_email: str | None = None,
-            extractor_name: str | None = None, extractor_version: str | None = None, node_type: str | None = None,
-            name: str | None = None):
+            extractor_name: str | None = None, extractor_version: str | None = None, name: str | None = None):
         """
         Add a metadata dictionaray to the class
         :param payload: (dict) The metadata dictionary
@@ -41,13 +41,13 @@ class Metadata:
         :param user_email: (str | None) The email associated with the metadata dictionary.
         :param extractor_name: (str | None) The name of the metadata extractor.
         :param extractor_version: (str | None) The version of the metadata extractor.
-        :param node_type: (str | None) The node type of the dataset.
         :param name: (str | None) Human-readable name for the file or folder whose meta-data will be saved.
         :return: no return value
         """
         dataset_id = self.ds.id
         dataset_version = get_dataset_version(self.ds)
         extraction_time = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+        node_type = get_dataset_nodetype(ds_path=self.ds.path, dm_root=self.dm_root)
 
         # Choose a Schema.org type
         if self.relposix == '.':

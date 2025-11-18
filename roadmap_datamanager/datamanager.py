@@ -123,12 +123,11 @@ class DataManager:
             GIN_user=persisted.get("GIN_user")
         )
 
-    def _ensure_dataset(self, path: Path, node_type, name, superds: Optional[Path]) -> None:
+    def _ensure_dataset(self, path: Path, name, superds: Optional[Path]) -> None:
         """
         If dataset at `path` exists, (optionally) ensure it's registered in `superds`.
         Otherwise, create it (registered when superds is given).
         :param path: Path pointing to the dataset.
-        :param node_type: Node type (user, project, category, experiment).
         :param name: Name of the dataset.
         :param superds: Path pointing to the parent dataset.
         :return: None
@@ -153,7 +152,7 @@ class DataManager:
         else:
             # create and register as subdataset of superds in one API call
             dl.create(path=str(path), dataset=str(superds), cfg_proc=self.cfg.datalad_profile)
-        self.save_meta(path, name=name, node_type=node_type)
+        self.save_meta(path, name=name)
 
     @staticmethod
     def _parse_iso(ts: str) -> datetime:
@@ -268,22 +267,21 @@ class DataManager:
         ep = cp / experiment if (cp and experiment) else None
 
         # Ensure/create datasets
-        self._ensure_dataset(up, superds=None, node_type="user", name=self.cfg.user_name)
+        self._ensure_dataset(up, superds=None, name=self.cfg.user_name)
 
         if pp:
-            self._ensure_dataset(pp, superds=up, node_type="project", name=project)
+            self._ensure_dataset(pp, superds=up, name=project)
         if cp:
-            self._ensure_dataset(cp, superds=pp, node_type="campaign", name=campaign)
+            self._ensure_dataset(cp, superds=pp, name=campaign)
         if ep:
-            self._ensure_dataset(ep, superds=cp, node_type="experiment", name=experiment)
+            self._ensure_dataset(ep, superds=cp, name=experiment)
 
         # Record state at the top-level, recursing into registered subs
         dl.save(dataset=str(up), recursive=True,
-                message=f"scidata: initialized tree for {self.cfg.user_name}/{project or ''}/{campaign or ''}")
+                message=f"Initialized tree for {self.cfg.user_name}/{project or ''}/{campaign or ''}")
         if self.cfg.verbose:
-            print(f"[scidata] initialized/verified tree at {up} for "
+            print(f"Initialized/verified tree at {up} for "
                   f"{self.cfg.user_name}/" + "/".join(x for x in (project, campaign, experiment) if x))
-
         return ep
 
     def install_into_tree(self, source: os.PathLike | str, *, project: Optional[str], campaign: Optional[str],
@@ -366,8 +364,7 @@ class DataManager:
 
         return final_target
 
-    @staticmethod
-    def load_meta(ds_path: str | Path, *, path: str | Path | None = None, mode: str = 'meta') -> Dict[str, Any]:
+    def load_meta(self, ds_path: str | Path, *, path: str | Path | None = None, mode: str = 'meta') -> Dict[str, Any]:
         """
         Return the metadata for `path` in `ds_path`.
         :param ds_path: (str, os.PathLike) path to the dataset to iterate over
@@ -376,7 +373,7 @@ class DataManager:
         :return: metadata dict
         """
         ds_path, path, absolute_path, relposix = ensure_paths(ds_path, path)
-        meta = md.Metadata(ds_path, path)
+        meta = md.Metadata(ds_root=ds_path, path=path, dm_root=self.cfg.dm_root)
         record = meta.get(mode=mode)
         return record
 
@@ -644,7 +641,7 @@ class DataManager:
         })
 
     def save_meta(self, ds_path: str | Path, *, path: str | Path | None = None, name: Optional[str] = None,
-                  extra: Optional[Dict[str, Any]] = None, node_type: Optional[str] = 'experiment') -> None:
+                  extra: Optional[Dict[str, Any]] = None) -> None:
         """
         Attach JSON-LD at dataset level to any file, folder, or the dataset itself using the MetaLad Python API.
         :param ds_path: (str, Path) path to the dataset
@@ -652,16 +649,13 @@ class DataManager:
                      identifier
         :param name: (str) human-readable name for the file or folder whose meta-data will be saved.
         :param extra: (Dict[str, Any]) optional extra metadata to be attached beyond default fields
-        :param node_type: (str) optional node type of the dataset to which the metadata is attached,
-                           defaults to 'experiment' the lowest level node
         :return: None
         """
 
-        meta = md.Metadata(ds_root=ds_path, path=path)
+        meta = md.Metadata(ds_root=ds_path, path=path, dm_root=self.cfg.dm_root)
         meta.add(
             payload=extra,
             mode='overwrite',
-            node_type=node_type,
             name=name,
             user_email=self.cfg.user_email,
             user_name=self.cfg.user_name,

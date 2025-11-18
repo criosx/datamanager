@@ -9,7 +9,6 @@ import unittest
 import uuid
 
 from datalad.distribution.dataset import Dataset
-from datalad.support.exceptions import IncompleteResultsError
 from pathlib import Path, PurePosixPath
 
 from roadmap_datamanager.datamanager import DataManager
