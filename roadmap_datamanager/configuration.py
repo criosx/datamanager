@@ -37,7 +37,6 @@ class DataManagerConfig:
     # Runtime knobs
     verbose: bool = True
     env: Dict[str, str] = field(default_factory=dict)
-    register_existing: bool = True
 
     # Clock (for tests)
     now_fn: Callable[[], datetime] = lambda: datetime.now(timezone.utc)

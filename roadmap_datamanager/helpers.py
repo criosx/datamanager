@@ -51,8 +51,9 @@ def ensure_paths(ds_path, path):
 
     # Working tree probe (only if materialized); use dataset root when rel_path is empty
     absolute_path = ds_path if relposix == '.' else (ds_path / path)
+    rel_path = path
 
-    return ds_path, path, absolute_path, relposix
+    return ds_path, rel_path, absolute_path, relposix
 
 
 def find_dataset_root_and_rel(path: str | Path, dm_root: str | Path) -> tuple[Path | None, Path | None]:
@@ -152,6 +153,6 @@ def ssh_to_https(u: str) -> str:
         path = u.split(':', 1)[1]
         if path.endswith('.git'):
             path = path[:-4]
-        return f"https://{host}/{path}"
+        return f"https://{host}{path}"
     return u
 

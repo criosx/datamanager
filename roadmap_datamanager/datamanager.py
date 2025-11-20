@@ -42,7 +42,6 @@ class DataManager:
         extractor_version: str = "1.0",
         verbose: bool = True,
         env: Optional[Dict[str, str]] = None,
-        register_existing: bool = True,
         GIN_url: Optional[str] = None,
         GIN_repo: Optional[str] = None,
         GIN_user: Optional[str] = None
@@ -78,7 +77,6 @@ class DataManager:
             extractor_version=extractor_version,
             verbose=verbose,
             env=env or {},
-            register_existing=register_existing,
             GIN_url=eff_GIN_url,
             GIN_repo=eff_GIN_repo,
             GIN_user=eff_GIN_user
@@ -123,20 +121,21 @@ class DataManager:
             GIN_user=persisted.get("GIN_user")
         )
 
-    def _ensure_dataset(self, path: Path, name, superds: Optional[Path]) -> None:
+    def _ensure_dataset(self, path: Path, name, superds: Optional[Path], register_installed: bool = False) -> None:
         """
         If dataset at `path` exists, (optionally) ensure it's registered in `superds`.
         Otherwise, create it (registered when superds is given).
         :param path: Path pointing to the dataset.
         :param name: Name of the dataset.
         :param superds: Path pointing to the parent dataset.
+        :param register_installed: (bool) Whether or not to register the dataset with its parent if already installed..
         :return: None
         """
         path = Path(path).resolve()
         ds = Dataset(str(path))
 
         if ds.is_installed():
-            if superds is not None and self.cfg.register_existing:
+            if superds is not None and register_installed:
                 # If already registered, this is a no-op (status=notneeded)
                 dl.save(
                     dataset=str(superds),
@@ -200,6 +199,7 @@ class DataManager:
             raise RuntimeError(f"Destination path {dest} must be empty.")
 
         if source_url_root is None:
+            # testcomment
             source_url_root = f"git@gin.g-node.org:/"
 
         if user is None:
@@ -214,8 +214,8 @@ class DataManager:
 
         source_url = source_url_root + user + '/' + repo + '.git'
 
-        ds = dl.clone(source=source_url, path=str(dest))
-        ds.get(recursive=True, get_data=False)              # installs subdatasets
+        dl.clone(source=source_url, path=str(dest))
+        self.pull_from_remotes(dataset=str(dest), recursive=True)             # installs subdatasets
         return dest
 
     @staticmethod
@@ -331,10 +331,10 @@ class DataManager:
         # make sure any relative path from category exists, if given
         if dest_rel:
             dest_path = cat_path / dest_rel
-            if not dest_path.exists():
-                dest_path.mkdir(parents=True)
         else:
             dest_path = cat_path
+
+
 
         # after computing the destination folder dest_path, create it if not already exists
         dest_path.mkdir(parents=True, exist_ok=True)
@@ -363,9 +363,9 @@ class DataManager:
             raise FileNotFoundError(src)
 
         self.save_meta(ep, path=final_target.relative_to(ep), extra=metadata)
-        dl.save(dataset=str(ep), recursive=True, message=f"Installed {rename or src.name} in {self.cfg.user_name}/"
-                                                         f"{project or ''}/{campaign or ''}/{experiment or ''}")
-
+        # not necessary, as save_meta alreaddy saved the experiment, recursive=True below should also
+        # be redundant
+        # dl.save(dataset=str(ep), recursive=True, message=f"Installed {rename or src.name}")
         return final_target
 
     def load_meta(self, ds_path: str | Path, *, path: str | Path | None = None, mode: str = 'meta') -> Dict[str, Any]:
@@ -457,7 +457,7 @@ class DataManager:
         )
         """
 
-    def publish_gin_sibling(self, *, sibling_name: str = "gin", repo_name: str = "datamanager", dataset=None,
+    def publish_gin_sibling(self, *, sibling_name: str = "gin", repo_name: str = None, dataset=None,
                             access_protocol: str = "ssh", credential: Optional[str] = None, private: bool = False,
                             recursive: bool = False, existing: str = 'skip') -> None:
         """
@@ -484,14 +484,14 @@ class DataManager:
         ds = Dataset(str(dataset))
 
         # compute repo name
-        relpath = Path(dataset).relative_to(Path(self.cfg.dm_root))
+        root_path, relpath, ds_path, relposix = ensure_paths(ds_path=self.cfg.dm_root, path=dataset)
         if repo_name is None:
             repo_name = self.cfg.GIN_repo
-        if str(relpath) != '.':
+        if str(relposix) != '.':
             repo_name = repo_name + '-' + '-'.join(relpath.parts)
-
-        # make sure all changes are saved before publishing to GIN
-        ds.save(recursive=recursive, message='Save for GIN publishing')
+            ds_parent = Dataset(ds_path.parent)
+        else:
+            ds_parent = None
 
         # Create/reconfigure GIN sibling with content hosting
         ds.create_sibling_gin(
@@ -504,30 +504,23 @@ class DataManager:
             private=private
         )
 
-        ds.push(to=sibling_name, recursive=recursive, data='anything')
-
-        out = ds.siblings(
+        siblist = ds.siblings(
             'query',
             name=sibling_name,
-            as_common_datasrc=f'{sibling_name}-src',
             recursive=recursive
         )
 
-        # register relative GIN URLs in .gitmodules of the parents as the above command placed them only in the
+        # register GIN URLs in .gitmodules of the parents as the above command placed them only in the
         # .git/ record of the sibling itself
-        for entry in out:
-            # only subdatasets (not the root):
-            if entry.get('name') != sibling_name or entry.get('refds') == entry.get('path'):
+        for entry in siblist:
+            root_path, relpath, ds_path, relposix = ensure_paths(ds_path=self.cfg.dm_root, path=Path(entry['path']))
+            if relposix == '.':
+                # exclude root
                 continue
-
-            sd_path = Path(entry['path']).resolve()
-            parent = sd_path.parent
+            parent = ds_path.parent
 
             # Prefer HTTPS browser URL (no .git). If we only have SSH, convert it.
             url = entry.get('url') or ''
-            pushurl = entry.get('pushurl') or entry.get('annexurl') or ''
-
-            # Normalize the primary URL for .gitmodules
             if url.startswith('http'):
                 https_url = url[:-4] if url.endswith('.git') else url
             else:
@@ -535,21 +528,20 @@ class DataManager:
 
             dl.subdatasets(
                 dataset=str(parent),
-                path=str(sd_path),
-                set_property=[('url', https_url)]
+                path=str(ds_path),
+                set_property=[
+                    ('url', https_url),
+                    ('datalad-url', url)
+                ]
             )
 
-            # Optional: add SSH as a fallback candidate for collaborators
-            if pushurl:
-                dl.subdatasets(
-                    dataset=str(parent),
-                    path=str(sd_path),
-                    set_property=[('datalad-url', pushurl)],
-                    state='present',
-                )
-
+        # make sure all changes are saved before publishing to GIN
         ds.save(recursive=recursive, message='GIN publishing')
         ds.push(to=sibling_name, recursive=recursive, data='anything')
+
+        if ds_parent is not None:
+            ds_parent.save(recursive=False, message='GIN publishing')
+            ds_parent.push(to=sibling_name, recursive=False, data='nothing')
 
         if self.cfg.verbose:
             print(
@@ -569,7 +561,8 @@ class DataManager:
         """
         ds = Dataset(str(dataset))
         ds.update(recursive=recursive, how='merge', sibling=sibling_name)
-        ds.get(recursive=True, get_data=False)
+        ds.get(recursive=recursive, get_data=False)
+        ds.save(recursive=recursive, message='updated from remote')
 
     @staticmethod
     def push_to_remotes(dataset: str | os.PathLike, recursive: bool = True, message: str | None = None, sibling_name:

@@ -802,13 +802,6 @@ class MainWindow(QMainWindow):
                     dataset=ds_root,
                     recursive=True
                 )
-                self.logviewer_append_text(f"[INFO] Updated remote content: {p}\n")
-                self._run_in_worker(
-                    self.dm.save,
-                    path=ds_root,
-                    recursive=True
-                )
-                self.logviewer_append_text(f"[INFO] Saved updated remote content: {p}\n")
             except Exception as e:
                 self.logviewer_append_text(f"[WARN] Could not GIN publish {p}: {e}\n")
 
