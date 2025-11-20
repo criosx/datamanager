@@ -334,8 +334,6 @@ class DataManager:
         else:
             dest_path = cat_path
 
-
-
         # after computing the destination folder dest_path, create it if not already exists
         dest_path.mkdir(parents=True, exist_ok=True)
         # decide the final target path for file/dir
@@ -560,8 +558,9 @@ class DataManager:
         :return: no return value
         """
         ds = Dataset(str(dataset))
+        # ds.save(recursive=recursive, message='save before update from remote')
         ds.update(recursive=recursive, how='merge', sibling=sibling_name)
-        ds.get(recursive=recursive, get_data=False)
+        # ds.get(recursive=recursive, get_data=False)
         ds.save(recursive=recursive, message='updated from remote')
 
     @staticmethod
