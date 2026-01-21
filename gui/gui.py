@@ -6,7 +6,7 @@ import sys
 
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QThreadPool, Slot, QDir
+from PySide6.QtCore import Qt, QThreadPool, Slot, QDir, QTimer
 from PySide6.QtGui import QPalette, QAction, QColor
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QComboBox, QDialog, QFileDialog, QFileSystemModel,
@@ -43,7 +43,7 @@ class MainWindow(QMainWindow):
         self._create_menubar()
         self._create_split_view()
 
-        # --- Redirect stdout/stderr FIRST ---
+        # --- Redirect stdout/stderr ---
         self.stdout_redirect = EmittingStream()
         self.stdout_redirect.textWritten.connect(self.logviewer_append_text)
         sys.stdout = self.stdout_redirect
@@ -68,6 +68,11 @@ class MainWindow(QMainWindow):
         dl_logger.propagate = True  # let records bubble up to root
         # do not add log_handler here
         # dl_logger.addHandler(log_handler)
+
+        self._meta_update_timer = QTimer(self)
+        self._meta_update_timer.setSingleShot(True)
+        self._meta_update_timer.timeout.connect(self._dm_update_metadata_for_current_selection)
+        self._pending_meta_item = None
 
         # bootstrap DM
         self.bootstrap_datamanager()
@@ -184,15 +189,15 @@ class MainWindow(QMainWindow):
         self.btn_up = QPushButton("↑ Up")
         self.btn_refresh = QPushButton("Refresh")
         self.btn_new_dataset = QPushButton("New dataset here…")
-        self.btn_show_meta = QPushButton("Show metadata")
+        # self.btn_show_meta = QPushButton("Show metadata")
         self.btn_up.clicked.connect(self.dm_go_up)
         self.btn_refresh.clicked.connect(self.dm_refresh_panel)
         self.btn_new_dataset.clicked.connect(self.dm_create_dataset_here)
-        self.btn_show_meta.clicked.connect(self.dm_show_selected_metadata)
+        # self.btn_show_meta.clicked.connect(self.dm_show_selected_metadata)
         nav_bar.addWidget(self.btn_up)
         nav_bar.addWidget(self.btn_refresh)
         nav_bar.addWidget(self.btn_new_dataset)
-        nav_bar.addWidget(self.btn_show_meta)
+        # nav_bar.addWidget(self.btn_show_meta)
         dm_layout.addLayout(nav_bar)
 
         # list of children at current level
@@ -203,6 +208,7 @@ class MainWindow(QMainWindow):
         self.dm_list.setContextMenuPolicy(Qt.CustomContextMenu)
         self.dm_list.customContextMenuRequested.connect(self._dm_context_menu)
         self.dm_list.setSortingEnabled(True)
+        self.dm_list.itemSelectionChanged.connect(self._dm_selection_changed)
         dm_layout.addWidget(self.dm_list, 1)
 
         splitter.addWidget(self.dm_panel)
@@ -362,6 +368,36 @@ class MainWindow(QMainWindow):
             self.dm_current_path = p
             self.dm_refresh_panel()
         # else: it's a file/symlink — ignore or handle later (open in Finder, fetch annex, etc.)
+
+    @Slot()
+    def _dm_selection_changed(self):
+        items = self.dm_list.selectedItems()
+
+        # Empty or multi-selection: clear metadata view and stop any pending load
+        if len(items) != 1:
+            if hasattr(self, "meta_view"):
+                self.meta_view.clear()
+                # Optionally show a hint instead of pure empty:
+                # self.meta_view.setPlainText("Select a single item to view metadata.")
+            self._pending_meta_item = None
+            self._meta_update_timer.stop()
+            return
+
+        self._pending_meta_item = items[0]
+        # Debounce: restart the timer each time selection changes
+        self._meta_update_timer.start(300)  # ms; tweak as desired
+
+    @Slot()
+    def _dm_update_metadata_for_current_selection(self):
+        # If selection changed again during the delay, re-check
+        items = self.dm_list.selectedItems()
+        if len(items) != 1:
+            if hasattr(self, "meta_view"):
+                self.meta_view.clear()
+            return
+
+        # Call your existing method which relies on the current selection
+        self.dm_show_selected_metadata()
 
     def _go_home(self):
         home = QDir.homePath()
