@@ -10,27 +10,27 @@ from PySide6.QtWidgets import QDialog, QDialogButtonBox, QFormLayout, QLineEdit
 
 def create_light_palette():
     p = QPalette()
-    p.setColor(QPalette.Window, QColor(240, 240, 240))
-    p.setColor(QPalette.WindowText, Qt.black)
-    p.setColor(QPalette.Base, QColor(255, 255, 255))
-    p.setColor(QPalette.AlternateBase, QColor(240, 240, 240))
-    p.setColor(QPalette.ToolTipBase, Qt.white)
-    p.setColor(QPalette.ToolTipText, Qt.black)
-    p.setColor(QPalette.Text, Qt.black)
-    p.setColor(QPalette.Button, QColor(240, 240, 240))
-    p.setColor(QPalette.ButtonText, Qt.black)
-    p.setColor(QPalette.BrightText, Qt.red)
-    p.setColor(QPalette.Link, QColor(42, 130, 218))
-    p.setColor(QPalette.Highlight, QColor(42, 130, 218))
-    p.setColor(QPalette.HighlightedText, Qt.white)
+    p.setColor(QPalette.ColorRole.Window, QColor(240, 240, 240))
+    p.setColor(QPalette.ColorRole.WindowText, Qt.GlobalColor.black)
+    p.setColor(QPalette.ColorRole.Base, QColor(255, 255, 255))
+    p.setColor(QPalette.ColorRole.AlternateBase, QColor(240, 240, 240))
+    p.setColor(QPalette.ColorRole.ToolTipBase, Qt.GlobalColor.white)
+    p.setColor(QPalette.ColorRole.ToolTipText, Qt.GlobalColor.black)
+    p.setColor(QPalette.ColorRole.Text, Qt.GlobalColor.black)
+    p.setColor(QPalette.ColorRole.Button, QColor(240, 240, 240))
+    p.setColor(QPalette.ColorRole.ButtonText, Qt.GlobalColor.black)
+    p.setColor(QPalette.ColorRole.BrightText, Qt.GlobalColor.red)
+    p.setColor(QPalette.ColorRole.Link, QColor(42, 130, 218))
+    p.setColor(QPalette.ColorRole.Highlight, QColor(42, 130, 218))
+    p.setColor(QPalette.ColorRole.HighlightedText, Qt.GlobalColor.white)
 
     # --- inactive buttons ---
-    p.setColor(QPalette.Inactive, QPalette.Button, QColor(230, 230, 230))
-    p.setColor(QPalette.Inactive, QPalette.ButtonText, QColor(80, 80, 80))
+    p.setColor(QPalette.ColorGroup.Inactive, QPalette.ColorRole.Button, QColor(230, 230, 230))
+    p.setColor(QPalette.ColorGroup.Inactive, QPalette.ColorRole.ButtonText, QColor(80, 80, 80))
 
     # --- disabled buttons ---
-    p.setColor(QPalette.Disabled, QPalette.Button, QColor(230, 230, 230))
-    p.setColor(QPalette.Disabled, QPalette.ButtonText, QColor(150, 150, 150))
+    p.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.Button, QColor(230, 230, 230))
+    p.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.ButtonText, QColor(150, 150, 150))
     return p
 
 
@@ -62,7 +62,8 @@ class FirstRunDialog(QDialog):
         self.email_edit = QLineEdit(self)
         layout.addRow("User name:", self.name_edit)
         layout.addRow("User email:", self.email_edit)
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel, parent=self)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
+                                   parent=self)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)

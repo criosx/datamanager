@@ -130,7 +130,7 @@ class MainWindow(QMainWindow):
 
     def _create_split_view(self):
         splitter = QSplitter()
-        splitter.setOrientation(Qt.Horizontal)
+        splitter.setOrientation(Qt.Orientation.Horizontal)
 
         # ----- Left: filesystem browser -----
         self.fs_panel = QWidget()
@@ -156,9 +156,9 @@ class MainWindow(QMainWindow):
         self.fs_tree = QTreeView()
         self.fs_tree.setModel(self.fs_model)
         self.fs_tree.setRootIndex(self.fs_model.index(QDir.homePath()))
-        self.fs_tree.setSelectionMode(QTreeView.ExtendedSelection)
+        self.fs_tree.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.fs_tree.setSortingEnabled(True)
-        self.fs_tree.sortByColumn(0, Qt.AscendingOrder)
+        self.fs_tree.sortByColumn(0, Qt.SortOrder.AscendingOrder)
         self.fs_tree.setColumnWidth(0, 280)
         fs_layout.addWidget(self.fs_tree, 1)
 
@@ -203,9 +203,9 @@ class MainWindow(QMainWindow):
         # list of children at current level
         self.dm_list = QListWidget()
         self.dm_list.itemActivated.connect(self._dm_open_item)
-        self.dm_list.setEditTriggers(QListWidget.NoEditTriggers)
-        self.dm_list.setSelectionMode(QAbstractItemView.ExtendedSelection)
-        self.dm_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.dm_list.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.dm_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.dm_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.dm_list.customContextMenuRequested.connect(self._dm_context_menu)
         self.dm_list.setSortingEnabled(True)
         self.dm_list.itemSelectionChanged.connect(self._dm_selection_changed)
@@ -360,7 +360,7 @@ class MainWindow(QMainWindow):
         return level, pcec
 
     def _dm_open_item(self, item: QListWidgetItem):
-        path_str = item.data(Qt.UserRole)
+        path_str = item.data(Qt.ItemDataRole.UserRole)
         if not path_str:
             return
         p = Path(path_str)
@@ -433,7 +433,7 @@ class MainWindow(QMainWindow):
     def _selected_dm_paths(self):
         paths: list[Path] = []
         for item in self.dm_list.selectedItems():
-            path_str = item.data(Qt.UserRole)
+            path_str = item.data(Qt.ItemDataRole.UserRole)
             if path_str:
                 paths.append(Path(path_str))
 
@@ -618,7 +618,7 @@ class MainWindow(QMainWindow):
         item = self.dm_list.currentItem()
         if not item:
             return
-        path_str = item.data(Qt.UserRole)
+        path_str = item.data(Qt.ItemDataRole.UserRole)
         if not path_str:
             return
         p = Path(path_str)
@@ -634,9 +634,9 @@ class MainWindow(QMainWindow):
             self,
             "New GIN Repository",
             f"Create new GIN repository? This will break dependencies for clones of any exisiting repository.",
-            QMessageBox.Yes | QMessageBox.No
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
         )
-        if ret != QMessageBox.Yes:
+        if ret != QMessageBox.StandardButton.Yes:
             return
 
         # remove all known remote siblings
@@ -710,7 +710,7 @@ class MainWindow(QMainWindow):
             kind = self._dm_classify_entry(child)
 
             item = QListWidgetItem(child.name)
-            item.setData(Qt.UserRole, str(child))
+            item.setData(Qt.ItemDataRole.UserRole, str(child))
 
             # color-code
             if kind == "dataset":
@@ -745,7 +745,7 @@ class MainWindow(QMainWindow):
             return
 
         item = self.dm_list.currentItem()
-        target_path = Path(item.data(Qt.UserRole)) if item else self.dm_current_path
+        target_path = Path(item.data(Qt.ItemDataRole.UserRole)) if item else self.dm_current_path
 
         ds_root, rel = find_dataset_root_and_rel(target_path, self.dm.cfg.dm_root)
         if ds_root is None:
@@ -792,7 +792,7 @@ class MainWindow(QMainWindow):
                 "Remove content",
                 f"Remove the following content safely from the hierarchy? "
                 f"Check that a remote copy exist. \n\n{names}",
-                QMessageBox.Yes | QMessageBox.No
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
             )
             reckless_flag = None
         else:
@@ -800,11 +800,11 @@ class MainWindow(QMainWindow):
                 self,
                 "Remove content",
                 f"Remove the following dataset(s) or content from the hierarchy?\n\n{names}",
-                QMessageBox.Yes | QMessageBox.No
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
             )
             reckless_flag = "kill"
 
-        if ret != QMessageBox.Yes:
+        if ret != QMessageBox.StandardButton.Yes:
             return
 
         for ds_root, rel_str in paths:
@@ -968,7 +968,7 @@ class MainWindow(QMainWindow):
 
         dlg = GinRemoteDialog(self, default_user=default_user, default_repo=default_repo,
                               default_protocol=default_protocol)
-        if dlg.exec() == QDialog.Accepted:
+        if dlg.exec() == QDialog.DialogCode.Accepted:
             url = dlg.url()
             repo = dlg.repo()
             username = dlg.username()
@@ -999,7 +999,7 @@ class MainWindow(QMainWindow):
             dm = DataManager(root=path)
         except RuntimeError:
             dlg = FirstRunDialog(self)
-            if dlg.exec() == QDialog.Accepted:
+            if dlg.exec() == QDialog.DialogCode.Accepted:
                 name, email = dlg.get_values()
                 dm = DataManager(root=path, user_name=name, user_email=email)
             else:
