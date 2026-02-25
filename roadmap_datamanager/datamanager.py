@@ -296,7 +296,7 @@ class DataManager:
             self._ensure_dataset(ep, superds=cp, name=experiment, force=force, do_not_save=force)
 
         if force:
-            dl.save(up, recursive=True)
+            dl.save(dataset=up, recursive=True)
 
         if self.cfg.verbose:
             print(f"Initialized/verified tree at {up} for "
