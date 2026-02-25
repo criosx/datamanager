@@ -127,7 +127,7 @@ class DataManager:
                         superds: Optional[Path],
                         register_installed: bool = False,
                         force: bool = False,
-                        recursive_save:bool = False) -> None:
+                        do_not_save:bool = False) -> None:
         """
         If dataset at `path` exists, (optionally) ensure it's registered in `superds`.
         Otherwise, create it (registered when superds is given).
@@ -135,7 +135,7 @@ class DataManager:
         :param name: Name of the dataset.
         :param superds: Path pointing to the parent dataset.
         :param register_installed: (bool) Whether to register the dataset with its parent if already installed.
-        :param recursive_save: (bool) Whether to save the dataset recursively.
+        :param do_not_save: (bool) Whether not to save the dataset.
         :return: None
         """
         path = Path(path).resolve()
@@ -165,7 +165,7 @@ class DataManager:
 
         # dataset save here is not necessary, as it is saved in save_meta
         # dl.save(dataset=str(path), recursive=recursive_save, message=f"Initialized dataset.")
-        self.save_meta(path, name=name, recursive_save=recursive_save)
+        self.save_meta(path, name=name, do_not_save=do_not_save)
 
     @staticmethod
     def _parse_iso(ts: str) -> datetime:
@@ -275,7 +275,8 @@ class DataManager:
         :param project: project name
         :param campaign: campaign name
         :param experiment: experiment name
-        :param force: force create new datasets even if directory is not empty
+        :param force: Force create new datasets even if directory is not empty. This option will trigger a delayed save
+                      until the entire tree has been initialized. Otherwise, subdatasets will not be properly created.
         :return: (Path) to experiment dataset if argument provided, otherwise None
         """
 
@@ -288,11 +289,14 @@ class DataManager:
         self._ensure_dataset(up, superds=None, name=self.cfg.user_name, force=force)
 
         if pp:
-            self._ensure_dataset(pp, superds=up, name=project, force=force)
+            self._ensure_dataset(pp, superds=up, name=project, force=force, do_not_save=force)
         if cp:
-            self._ensure_dataset(cp, superds=pp, name=campaign, force=force)
+            self._ensure_dataset(cp, superds=pp, name=campaign, force=force, do_not_save=force)
         if ep:
-            self._ensure_dataset(ep, superds=cp, name=experiment, force=force)
+            self._ensure_dataset(ep, superds=cp, name=experiment, force=force, do_not_save=force)
+
+        if force:
+            dl.save(up, recursive=True)
 
         if self.cfg.verbose:
             print(f"Initialized/verified tree at {up} for "
@@ -652,7 +656,7 @@ class DataManager:
                   path: str | Path | None = None,
                   name: Optional[str] = None,
                   extra: Optional[Dict[str, Any]] = None,
-                  recursive_save = False) -> None:
+                  do_not_save = False) -> None:
         """
         Attach JSON-LD at dataset level to any file, folder, or the dataset itself using the MetaLad Python API.
         :param ds_path: (str, Path) path to the dataset
@@ -660,7 +664,7 @@ class DataManager:
                      identifier
         :param name: (str) human-readable name for the file or folder whose meta-data will be saved.
         :param extra: (Dict[str, Any]) optional extra metadata to be attached beyond default fields
-        :param recursive_save: (bool) whether to save recursively or not
+        :param do_not_save: (bool) whether to save recursively or not
         :return: None
         """
 
@@ -678,11 +682,12 @@ class DataManager:
         targetstr = str(path) if path is not None else str(ds_path)
 
         # Commit metadata
-        dl.save(
-            dataset=str(ds_path),
-            message=f"Metadata for {targetstr}",
-            recursive=recursive_save
-        )
+        if not do_not_save:
+            dl.save(
+                dataset=str(ds_path),
+                message=f"Metadata for {targetstr}",
+                recursive=False
+            )
         if self.cfg.verbose:
             print(f"Added metadata to dataset {targetstr}")
             print(f"Payload:")
