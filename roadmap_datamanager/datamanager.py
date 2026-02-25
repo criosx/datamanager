@@ -286,7 +286,7 @@ class DataManager:
         ep = cp / experiment if (cp and experiment) else None
 
         # Ensure/create datasets
-        self._ensure_dataset(up, superds=None, name=self.cfg.user_name, force=force)
+        self._ensure_dataset(up, superds=None, name=self.cfg.user_name, force=force, do_not_save=force)
 
         if pp:
             self._ensure_dataset(pp, superds=up, name=project, force=force, do_not_save=force)
