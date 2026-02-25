@@ -121,14 +121,21 @@ class DataManager:
             GIN_user=persisted.get("GIN_user")
         )
 
-    def _ensure_dataset(self, path: Path, name, superds: Optional[Path], register_installed: bool = False) -> None:
+    def _ensure_dataset(self,
+                        path: Path,
+                        name,
+                        superds: Optional[Path],
+                        register_installed: bool = False,
+                        force: bool = False,
+                        recursive_save:bool = False) -> None:
         """
         If dataset at `path` exists, (optionally) ensure it's registered in `superds`.
         Otherwise, create it (registered when superds is given).
         :param path: Path pointing to the dataset.
         :param name: Name of the dataset.
         :param superds: Path pointing to the parent dataset.
-        :param register_installed: (bool) Whether or not to register the dataset with its parent if already installed..
+        :param register_installed: (bool) Whether to register the dataset with its parent if already installed.
+        :param recursive_save: (bool) Whether to save the dataset recursively.
         :return: None
         """
         path = Path(path).resolve()
@@ -148,17 +155,17 @@ class DataManager:
         if superds is None:
             # top-level dataset
             # merge any remote changes into superdataset before committing local changes
-            dl.create(path=str(path), cfg_proc=self.cfg.datalad_profile)
+            dl.create(path=str(path), cfg_proc=self.cfg.datalad_profile, force=force)
         else:
             # create and register as subdataset of superds in one API call
             # merge any remote changes into superdataset before committing local changes
             dl.update(dataset=superds, recursive=False, how='merge')
-            dl.create(path=str(path), dataset=str(superds), cfg_proc=self.cfg.datalad_profile)
+            dl.create(path=str(path), dataset=str(superds), cfg_proc=self.cfg.datalad_profile, force=force)
             dl.save(dataset=superds, recursive=False)
 
         # dataset save here is not necessary, as it is saved in save_meta
-        # dl.save(dataset=str(path), recursive=False, message=f"Initialized dataset.")
-        self.save_meta(path, name=name)
+        # dl.save(dataset=str(path), recursive=recursive_save, message=f"Initialized dataset.")
+        self.save_meta(path, name=name, recursive_save=recursive_save)
 
     @staticmethod
     def _parse_iso(ts: str) -> datetime:
@@ -257,14 +264,18 @@ class DataManager:
             for p in targets:
                 dl.get(dataset=str(dataset), path=str(p) if path else None, recursive=recursive)
 
-    def init_tree(self, *, project: Optional[str] = None, campaign: Optional[str] = None,
-                  experiment: Optional[str] = None) -> Path:
+    def init_tree(self, *,
+                  project: Optional[str] = None,
+                  campaign: Optional[str] = None,
+                  experiment: Optional[str] = None,
+                  force = False) -> Path:
         """
         Ensure the (user)/(project)/(campaign)/(experiment) dataset tree exists and is registered.
         Attach minimal JSON-LD at each level. Idempotent.
-        :param project:
-        :param campaign:
-        :param experiment:
+        :param project: project name
+        :param campaign: campaign name
+        :param experiment: experiment name
+        :param force: force create new datasets even if directory is not empty
         :return: (Path) to experiment dataset if argument provided, otherwise None
         """
 
@@ -274,14 +285,14 @@ class DataManager:
         ep = cp / experiment if (cp and experiment) else None
 
         # Ensure/create datasets
-        self._ensure_dataset(up, superds=None, name=self.cfg.user_name)
+        self._ensure_dataset(up, superds=None, name=self.cfg.user_name, force=force)
 
         if pp:
-            self._ensure_dataset(pp, superds=up, name=project)
+            self._ensure_dataset(pp, superds=up, name=project, force=force)
         if cp:
-            self._ensure_dataset(cp, superds=pp, name=campaign)
+            self._ensure_dataset(cp, superds=pp, name=campaign, force=force)
         if ep:
-            self._ensure_dataset(ep, superds=cp, name=experiment)
+            self._ensure_dataset(ep, superds=cp, name=experiment, force=force)
 
         if self.cfg.verbose:
             print(f"Initialized/verified tree at {up} for "
@@ -636,8 +647,12 @@ class DataManager:
             "GIN_user": self.cfg.GIN_user,
         })
 
-    def save_meta(self, ds_path: str | Path, *, path: str | Path | None = None, name: Optional[str] = None,
-                  extra: Optional[Dict[str, Any]] = None) -> None:
+    def save_meta(self,
+                  ds_path: str | Path, *,
+                  path: str | Path | None = None,
+                  name: Optional[str] = None,
+                  extra: Optional[Dict[str, Any]] = None,
+                  recursive_save = False) -> None:
         """
         Attach JSON-LD at dataset level to any file, folder, or the dataset itself using the MetaLad Python API.
         :param ds_path: (str, Path) path to the dataset
@@ -645,6 +660,7 @@ class DataManager:
                      identifier
         :param name: (str) human-readable name for the file or folder whose meta-data will be saved.
         :param extra: (Dict[str, Any]) optional extra metadata to be attached beyond default fields
+        :param recursive_save: (bool) whether to save recursively or not
         :return: None
         """
 
@@ -665,6 +681,7 @@ class DataManager:
         dl.save(
             dataset=str(ds_path),
             message=f"Metadata for {targetstr}",
+            recursive=recursive_save
         )
         if self.cfg.verbose:
             print(f"Added metadata to dataset {targetstr}")
