@@ -264,6 +264,25 @@ class DataManager:
             for p in targets:
                 dl.get(dataset=str(dataset), path=str(p) if path else None, recursive=recursive)
 
+    def get_status(self,
+                   dataset: str | os.PathLike = None,
+                   recursive: bool = False):
+        """
+        Retrieves the DataLad status of a dataset.
+        :param dataset: path to the dataset, defaults to None which will retrieve the status of the entire repository.
+        :param recursive: whether to recursively step into subdatasets
+        :return: (dict) status
+        """
+
+        if dataset is None:
+            dataset = self.cfg.dm_root
+        dataset = str(dataset)
+
+        status = dl.status(dataset=dataset, recursive=recursive)
+
+        return status
+
+
     def init_tree(self, *,
                   project: Optional[str] = None,
                   campaign: Optional[str] = None,
