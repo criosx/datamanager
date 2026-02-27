@@ -264,7 +264,7 @@ class DataManager:
             for p in targets:
                 dl.get(dataset=str(dataset), path=str(p) if path else None, recursive=recursive)
 
-    def get_status(self,
+    def get_status(self, *,
                    dataset: str | os.PathLike = None,
                    recursive: bool = False):
         """
