@@ -271,17 +271,19 @@ class DataManager:
         Retrieves the DataLad status of a dataset.
         :param dataset: path to the dataset, defaults to None which will retrieve the status of the entire repository.
         :param recursive: whether to recursively step into subdatasets
-        :return: (dict) status
+        :return: (tuple) (bool) dir exists, (bool) dataset is installed, (dict) status
         """
 
         if dataset is None:
             dataset = self.cfg.dm_root
-        dataset = str(dataset)
-
-        status = dl.status(dataset=dataset, recursive=recursive)
-
-        return status
-
+        dataset = Path(str(dataset)).expanduser().resolve()
+        if not dataset.is_dir():
+            return False, False, None
+        ds = Dataset(str(dataset))
+        if not ds.is_installed():
+            return True, False, None
+        status = ds.status(recursive=recursive)
+        return True, True, status
 
     def init_tree(self, *,
                   project: Optional[str] = None,
