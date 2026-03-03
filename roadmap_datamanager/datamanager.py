@@ -544,6 +544,10 @@ class DataManager:
         subprocess.run(["ssh", "-oBatchMode=yes", "-T", "git@gin.g-node.org"], check=False)
         subprocess.run(["git", "ls-remote", "gin", "HEAD"], check=False, cwd=str(ds.path))
 
+        # make sure all changes are saved before publishing to GIN
+        ds.save(recursive=recursive, message='GIN publishing')
+        ds.push(to=sibling_name, recursive=recursive, data='anything')
+
         siblist = ds.siblings(
             'query',
             name=sibling_name,
