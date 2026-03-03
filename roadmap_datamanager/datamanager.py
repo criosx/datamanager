@@ -538,6 +538,12 @@ class DataManager:
             private=private
         )
 
+        import os, subprocess, shutil
+        print("SSH_AUTH_SOCK:", os.environ.get("SSH_AUTH_SOCK"))
+        print("which ssh:", shutil.which("ssh"))
+        subprocess.run(["ssh", "-oBatchMode=yes", "-T", "git@gin.g-node.org"], check=False)
+        subprocess.run(["git", "ls-remote", "gin", "HEAD"], check=False, cwd=str(ds.path))
+
         siblist = ds.siblings(
             'query',
             name=sibling_name,
