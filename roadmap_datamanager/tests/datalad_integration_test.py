@@ -297,7 +297,7 @@ class DataManagerInstallIntoTreeTest(unittest.TestCase):
 # --- GIN test gating / config ---
 GIN_TEST = os.getenv("SCIDATA_TEST_GIN", "1") == "1"
 GIN_NAMESPACE = os.getenv("GIN_NAMESPACE", "fhein")  # e.g. your GIN username or org
-GIN_ACCESS = os.getenv("GIN_ACCESS", "ssh")    # "ssh" (recommended) or "https"
+GIN_ACCESS = os.getenv("GIN_ACCESS", "https-ssh")    # "ssh" (recommended) or "https"
 # CRED = os.getenv("SCIDATA_GIN_CRED")               # only if using https with a stored credential
 
 

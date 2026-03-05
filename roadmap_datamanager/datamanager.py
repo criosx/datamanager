@@ -538,15 +538,6 @@ class DataManager:
             private=private
         )
 
-        ds.save(recursive=recursive, message='GIN publishing')
-        ds.push(to=sibling_name, recursive=recursive, data='anything')
-
-        # import os, subprocess, shutil
-        # print("SSH_AUTH_SOCK:", os.environ.get("SSH_AUTH_SOCK"))
-        # print("which ssh:", shutil.which("ssh"))
-        # subprocess.run(["ssh", "-oBatchMode=yes", "-T", "git@gin.g-node.org"], check=False)
-        # subprocess.run(["git", "ls-remote", "gin", "HEAD"], check=False, cwd=str(ds.path))
-
         siblist = ds.siblings(
             'query',
             name=sibling_name,
