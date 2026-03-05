@@ -355,6 +355,18 @@ class DataManagerPublishGINSiblingTest(unittest.TestCase):
         cls.repo_name = f"scidata-{uuid.uuid4().hex}"
 
     def test_01_publish_sibling_to_gin(self):
+        # Lessons from previous failures of this test
+        # 1) On a Mac, check if you agreed to the XCode licencse.
+        # 2) Any SSH warning can potentially trigger DataLad to disable annex transfers via the .git/config annex-ignore
+        #    flag. The latest SSH implementation (this Mac at least) lead to a warning that the encryption used for the
+        #    connection of this command (and others) is not post-quantum. That had the side effect of Datalad setting
+        #    the annex-ignore flag in .git/config to true, prohibiting any future annex transfers.
+        #    For this particular warning, it was silenced by adding the following lines in .ssh/config under the g-node
+        #    server:
+        #    Host gin.g - node.org
+        #      IgnoreUnknown WarnWeakCrypto
+        #      WarnWeakCrypto no - pq - kex
+
         # Wire to GIN (create or reconfigure), recursively
         self.dm.publish_gin_sibling(
             sibling_name="gin",

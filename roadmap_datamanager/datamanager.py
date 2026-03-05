@@ -528,7 +528,7 @@ class DataManager:
             ds_parent = None
 
         # Create/reconfigure GIN sibling with content hosting
-        ds.create_sibling_gin(
+        siblist = ds.create_sibling_gin(
             repo_name,
             name=sibling_name,
             recursive=recursive,
@@ -538,16 +538,16 @@ class DataManager:
             private=private
         )
 
-        siblist = ds.siblings(
-            'query',
-            name=sibling_name,
-            recursive=recursive
-        )
-
         # register GIN URLs in .gitmodules of the parents as the above command placed them only in the
         # .git/ record of the sibling itself
         for entry in siblist:
+            # siblist contains entries for all actions performed during sibling creation. Since we only need the path,
+            # take it from the 'configure-sibling' action
+            if entry['action'] != 'configure-sibling':
+                continue
             root_path, relpath, ds_path, relposix = ensure_paths(ds_path=self.cfg.dm_root, path=Path(entry['path']))
+
+
             if relposix == '.':
                 # exclude root
                 continue
