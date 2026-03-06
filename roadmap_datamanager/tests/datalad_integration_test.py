@@ -17,13 +17,6 @@ from roadmap_datamanager.metadata import Metadata
 from typing import ClassVar
 from urllib.parse import urlparse
 
-print("which git:", shutil.which("git"))
-subprocess.run(["git", "--version"], check=False)
-
-# critical: this is closer to what DataLad does
-subprocess.run(["git", "annex", "version"], check=False)
-subprocess.run(["git", "annex", "version", "--raw"], check=False)
-
 # hard requirements check (do NOT silently skip)
 ENV_ERRORS = []
 

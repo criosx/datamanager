@@ -122,19 +122,6 @@ class DataManager:
             GIN_user=persisted.get("GIN_user")
         )
 
-    def _run_git(self, args: list[str], *, cwd: Path) -> subprocess.CompletedProcess:
-        """
-        Run a git command in `cwd` without changing the process working directory.
-        """
-        return subprocess.run(
-            ["git", *args],
-            cwd=str(cwd),
-            env=self._proc_env(),
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-
     def _ensure_upstream(self, *, ds_path: Path, remote: str) -> None:
         """
         Ensure the current branch in `ds_path` has an upstream set to `remote`.
@@ -240,6 +227,19 @@ class DataManager:
         env.setdefault("GIT_TERMINAL_PROMPT", "0")
         return env
 
+    def _run_git(self, args: list[str], *, cwd: Path) -> subprocess.CompletedProcess:
+        """
+        Run a git command in `cwd` without changing the process working directory.
+        """
+        return subprocess.run(
+            ["git", *args],
+            cwd=str(cwd),
+            env=self._proc_env(),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
     def clone_from_gin(self, dest: str | os.PathLike, source_url_root: str = None, user: str = None,
                        repo: str = None) -> Path:
         """
@@ -291,7 +291,9 @@ class DataManager:
             path = Path(path)
             if not path.is_absolute():
                 path = dataset / path
-            path = path.expanduser().resolve()
+            path = path.expanduser()
+            # do not resolve symlink of potential annexed file
+            path = path.parent.resolve() / path.name
             # Sanity check: ensure path lies within dataset
             try:
                 path.relative_to(dataset)
@@ -328,12 +330,14 @@ class DataManager:
             targets = [path]
         else:
             targets = list(path)
-        for i, p in enumerate(path):
+        for i, p in enumerate(targets):
             p = Path(p)
             if not p.is_absolute():
                 p = dataset / p
-            p = p.expanduser().resolve()
-            path[i] = p
+            p = p.expanduser()
+            # do not resolve symlink of potential annexed file
+            p = p.parent.resolve() / p.name
+            targets[i] = p
             # Sanity check: ensure path lies within dataset
             try:
                 p.relative_to(dataset)
