@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import subprocess
 
 from datetime import datetime
 from pathlib import Path
@@ -121,6 +122,55 @@ class DataManager:
             GIN_user=persisted.get("GIN_user")
         )
 
+    def _run_git(self, args: list[str], *, cwd: Path) -> subprocess.CompletedProcess:
+        """
+        Run a git command in `cwd` without changing the process working directory.
+        """
+        return subprocess.run(
+            ["git", *args],
+            cwd=str(cwd),
+            env=self._proc_env(),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    def _ensure_upstream(self, *, ds_path: Path, remote: str) -> None:
+        """
+        Ensure the current branch in `ds_path` has an upstream set to `remote`.
+
+        This is a minimal, low-risk fix to avoid ambiguous push targets and has proven
+        to stabilize subsequent DataLad push/annex transfer behavior.
+        :param ds_path: Path to DataLad dataset
+        :param remote: Remote branch
+        """
+        ds_path = Path(ds_path).resolve()
+
+        # Determine current branch (e.g., master/main). If detached HEAD, do nothing.
+        r = self._run_git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=ds_path)
+        branch = (r.stdout or "").strip()
+        if r.returncode != 0 or not branch or branch == "HEAD":
+            if self.cfg.verbose:
+                msg = (r.stderr or r.stdout or "").strip()
+                print(f"[DataManager] Skipping upstream set in {ds_path} (detached/unknown HEAD). {msg}")
+            return
+
+        # If upstream already exists, nothing to do.
+        r_up = self._run_git(["rev-parse", "--symbolic-full-name", "@{u}"], cwd=ds_path)
+        if r_up.returncode == 0:
+            return
+
+        # Set upstream explicitly.
+        r_set = self._run_git(["push", "--set-upstream", remote, branch], cwd=ds_path)
+        if r_set.returncode != 0:
+            raise RuntimeError(
+                f"Failed to set upstream for {ds_path} ({branch} -> {remote}). "
+                f"stdout={r_set.stdout.strip()} stderr={r_set.stderr.strip()}"
+            )
+        if self.cfg.verbose:
+            print(f"[DataManager] Set upstream: {ds_path} ({branch} -> {remote}/{branch})")
+
+
     def _ensure_dataset(self,
                         path: Path,
                         name,
@@ -225,24 +275,42 @@ class DataManager:
         self.pull_from_remotes(dataset=str(dest), recursive=True)             # installs subdatasets
         return dest
 
-    @staticmethod
-    def drop_local(dataset: str | os.PathLike, path: str | os.PathLike = None, recursive: bool = False) -> None:
+    def drop_content(self, dataset: str | os.PathLike, path: str | os.PathLike = None, recursive: bool = False) -> None:
         """
         Drop local annexed content after confirming availability elsewhere.
         :param dataset: (str, os.Pathlike) path to the dataset for which to drop local content
-        :param path: (str, os.Pathlike) relative path to the dataset component for which to drop local content,
-                      defaults to None which will drop all components of the dataset
-        :param recursive: whether to recursively step into subdatasets
+        :param path: (str, os.Pathlike) relative or absolute path to the dataset component for which to drop local
+                     content, defaults to None which will drop all components of the dataset
+        :param recursive: Whether to recursively step into subdatasets.
         :return: no return value
         """
+        if path is not None and recursive:
+            raise ValueError("Providing file paths and recursive=True is incompatible.")
+        dataset = Path(dataset).expanduser().resolve()
         if path is not None:
-            path = str(path)
-        content_path = Path(dataset) / Path(path)
-        dl.drop(dataset=str(dataset), path=content_path, recursive=recursive, what='filecontent')
+            path = Path(path)
+            if not path.is_absolute():
+                path = dataset / path
+            path = path.expanduser().resolve()
+            # Sanity check: ensure path lies within dataset
+            try:
+                path.relative_to(dataset)
+            except ValueError:
+                raise ValueError(f"{path} is not inside root {dataset}")
 
-    @staticmethod
-    def get_data(dataset: str | os.PathLike, path: str | os.PathLike | list[str | os.PathLike] | None = None,
-                 recursive: bool = False) -> None:
+        # dl.drop showed connection issues reaching the GIN server -> replace with git annex version
+        # dl.drop(dataset=str(dataset), path=path, recursive=recursive, what='filecontent')
+        if recursive:
+            _ = self._run_git(["annex", "drop", "--all"], cwd=Path(str(dataset)))
+            sibs = dl.siblings(dataset=str(dataset), action="query", return_type="list", recursive=recursive)
+            for sibling in sibs:
+                # run annex copy manually, since Datalad implementation proved to be brittle
+                _ = self._run_git(["annex", "drop", "--all"], cwd=Path(sibling["path"]))
+        else:
+            _ = self._run_git(["annex", "drop", str(path.name)], cwd=Path(str(dataset)))
+
+    def get_content(self, dataset: str | os.PathLike, path: str | os.PathLike | list[str | os.PathLike] | None = None,
+                    recursive: bool = False) -> None:
         """
         Retrieve annexed file content (bytes).
         :param dataset: (str, os.Pathlike) path to the dataset to update from GIN
@@ -251,18 +319,42 @@ class DataManager:
         :param recursive: whether to recursively step into subdatasets
         :return: no return value
         """
+        dataset = Path(dataset).expanduser().resolve()
+        if path is not None and recursive:
+            raise ValueError("Providing file paths and recursive=True is incompatible.")
         if path is None:
-            targets = None
+            targets = []
         elif isinstance(path, (str, os.PathLike, Path)):
             targets = [path]
         else:
             targets = list(path)
+        for i, p in enumerate(path):
+            p = Path(p)
+            if not p.is_absolute():
+                p = dataset / p
+            p = p.expanduser().resolve()
+            path[i] = p
+            # Sanity check: ensure path lies within dataset
+            try:
+                p.relative_to(dataset)
+            except ValueError:
+                raise ValueError(f"{p} is not inside root {dataset}")
 
-        if targets is None:
-            dl.get(dataset=str(dataset), recursive=recursive)
+        if not targets:
+            # datlad showed issues in git annex transfers -> use git annex directly
+            # dl.get(dataset=str(dataset), recursive=recursive)
+            _ = self._run_git(["annex", "get", "--all"], cwd=Path(str(dataset)))
+            if recursive:
+                sibs = dl.siblings(dataset=str(dataset), action="query", return_type="list", recursive=recursive)
+                for sibling in sibs:
+                    # run annex copy manually, since Datalad implementation proved to be brittle
+                    _ = self._run_git(["annex", "get", "--all"], cwd=Path(sibling["path"]))
         else:
             for p in targets:
-                dl.get(dataset=str(dataset), path=str(p) if path else None, recursive=recursive)
+                # dl.get(dataset=str(dataset), path=str(p) if path else None, recursive=recursive)
+                directory = p if p.is_dir() else p.parent
+                name = '--all' if p.is_dir() else str(p.name)
+                _ = self._run_git(["annex", "get", name], cwd=directory)
 
     def get_status(self, *,
                    dataset: str | os.PathLike = None,
@@ -271,7 +363,7 @@ class DataManager:
         Retrieves the DataLad status of a dataset.
         :param dataset: path to the dataset, defaults to None which will retrieve the status of the entire repository.
         :param recursive: whether to recursively step into subdatasets
-        :return: (tuple) (bool) dir exists, (bool) dataset is installed, (dict) status
+        :return: (tuple): (bool) dir exists, (bool) dataset is installed, (dict) status
         """
 
         if dataset is None:
@@ -538,6 +630,26 @@ class DataManager:
             private=private
         )
 
+        # Minimal stabilization step: ensure each (sub)dataset has a defined upstream branch on the target remote.
+        # This avoids the "no upstream branch" condition that can destabilize subsequent push/annex operations.
+        published_ds_paths: set[Path] = set()
+        for entry in siblist:
+            if entry.get('action') != 'configure-sibling':
+                continue
+            try:
+                _root_path, _relpath, entry_ds_path, _relposix = ensure_paths(
+                    ds_path=self.cfg.dm_root,
+                    path=Path(entry['path'])
+                )
+            except Exception:
+                # If ensure_paths fails for any reason, skip upstream setup for this entry.
+                continue
+            published_ds_paths.add(Path(entry_ds_path).resolve())
+        # Also include the dataset we started from.
+        # published_ds_paths.add(Path(dataset).resolve())
+        for p in sorted(published_ds_paths):
+            self._ensure_upstream(ds_path=p, remote=sibling_name)
+
         # register GIN URLs in .gitmodules of the parents as the above command placed them only in the
         # .git/ record of the sibling itself
         for entry in siblist:
@@ -547,9 +659,8 @@ class DataManager:
                 continue
             root_path, relpath, ds_path, relposix = ensure_paths(ds_path=self.cfg.dm_root, path=Path(entry['path']))
 
-
             if relposix == '.':
-                # exclude root
+                # exclude root for parent registration
                 continue
             parent = ds_path.parent
 
@@ -571,7 +682,10 @@ class DataManager:
 
         # make sure all changes are saved before publishing to GIN
         ds.save(recursive=recursive, message='GIN publishing')
-        ds.push(to=sibling_name, recursive=recursive, data='anything')
+        ds.push(to=sibling_name, recursive=recursive, data='nothing')
+        # copy annex data manually, as ds.push had trouble doing so
+        for p in sorted(published_ds_paths):
+            _ = self._run_git(["annex", "copy", "--to", sibling_name, "--all"], cwd=p)
 
         if ds_parent is not None:
             ds_parent.save(recursive=False, message='GIN publishing')
@@ -596,12 +710,11 @@ class DataManager:
         ds = Dataset(str(dataset))
         # ds.save(recursive=recursive, message='save before update from remote')
         ds.update(recursive=recursive, how='merge', sibling=sibling_name)
-        # ds.get(recursive=recursive, get_data=False)
+        # ds.get(recursive=recursive, get_content=False)
         ds.save(recursive=recursive, message='updated from remote')
 
-    @staticmethod
-    def push_to_remotes(dataset: str | os.PathLike, recursive: bool = True, message: str | None = None, sibling_name:
-                        str = None) -> None:
+    def push_to_remotes(self, dataset: str | os.PathLike, recursive: bool = True, message: str | None = None,
+                        sibling_name: str = None) -> None:
         """
         Save and push commits + annexed content to GIN.
         :param dataset: (str, os.Pathlike) path to the dataset to push to GIN
@@ -616,16 +729,17 @@ class DataManager:
         else:
             ds.save(recursive=recursive)
 
-        try:
-            ds.push(to=sibling_name, recursive=recursive, data='anything')
-        except Exception as e:
-            # Fallback: pick a sane sibling name
-            sibs = ds.siblings(action="query", return_type="list")
+        sibs = ds.siblings(action="query", return_type="list", recursive=recursive)
+        if sibling_name is None:
             names = {s["name"] for s in sibs if s.get("name")}
-            fallback = "gin" if "gin" in names else ("origin" if "origin" in names else None)
-            if not fallback:
-                raise RuntimeError("No publication target configured and no 'gin'/'origin' sibling found.") from e
-            ds.push(to=fallback, recursive=recursive, data="anything")
+            sibling_name = "gin" if "gin" in names else ("origin" if "origin" in names else None)
+        if not sibling_name:
+            raise RuntimeError("No publication target configured and no 'gin'/'origin' sibling found.")
+
+        ds.push(to=sibling_name, recursive=recursive, data="nothing")
+        for sibling in sibs:
+            # run annex copy manually, since Datalad implementation proved to be brittle
+            _ = self._run_git(["annex", "copy", "--to", sibling_name, "--all"], cwd=Path(sibling["path"]))
 
     @staticmethod
     def remove_siblings(path: str | os.PathLike, name: str = 'gin', recursive: bool = False) -> None:
@@ -647,7 +761,7 @@ class DataManager:
         :param message: (str) optional commit message
         :return: no return value
         """
-        path = Path(path).resolve()
+        path = Path(path).resolve().absolute()
         ds_root, rel = find_dataset_root_and_rel(path, dm_root=self.cfg.dm_root)
 
         if str(rel) == '.':
@@ -655,7 +769,7 @@ class DataManager:
             dl.save(dataset=str(ds_root), recursive=recursive, message=message)
         else:
             # just save content, if path is not related to a subdataset
-            dl.save(path=str(path), recursive=False, message=message)
+            dl.save(dataset=str(ds_root), path=str(path), recursive=False, message=message)
 
     def save_current_dm_configuration(self):
         """

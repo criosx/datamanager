@@ -573,7 +573,7 @@ class MainWindow(QMainWindow):
             p = str(ds_root) + ':' + str(rel_str)
             try:
                 self._run_in_worker(
-                    self.dm.drop_local,
+                    self.dm.drop_content,
                     dataset=str(ds_root),
                     path=rel_str,
                     what="filecontent",
@@ -596,7 +596,7 @@ class MainWindow(QMainWindow):
                 path = str(Path(ds_root) / Path(rel_str))
             try:
                 self._run_in_worker(
-                    self.dm.get_data,
+                    self.dm.get_content,
                     dataset=str(ds_root),
                     path=path,
                     recursive=recursive

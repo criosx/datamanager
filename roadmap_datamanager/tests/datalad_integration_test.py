@@ -387,16 +387,16 @@ class DataManagerPublishGINSiblingTest(unittest.TestCase):
         self.assertTrue(any(s.get("name") == "gin" for s in sub_sibs), "subdataset missing 'gin' sibling")
 
         # Try a lightweight publish to ensure remote usability (Git + annex content)
-        #    (publish_gin_sibling already pushes, but we do a small follow-up change to verify)
+        #    (publish_gin_sibling already pushed, but we do a small follow-up change to verify)
         (self.root / "TOUCH.txt").write_text("tick\n")
-        dl.save(dataset=str(self.root), path=[str(self.root / "TOUCH.txt")], recursive=True, message="touch")
-        dl.push(dataset=str(self.root), to="gin", recursive=True, data="anything")
+        self.dm.save(path=str(self.root / "TOUCH.txt"), recursive=False, message="touch")
+        self.dm.push_to_remotes(dataset=str(self.root), sibling_name="gin", recursive=False)
 
         # Optional integrity check: drop local content for annexed file and get it back from GIN
         #    This proves annex on GIN is actually serving content.
-        dl.drop(dataset=str(sub), path=[str(sub / "note.bin")], what="filecontent", reckless="availability")
+        self.dm.drop_content(dataset=str(sub), path=str(sub / "note.bin"))
         self.assertFalse(dl.Dataset(str(sub)).repo.file_has_content("note.bin"))
-        dl.get(dataset=str(sub), path=[str(sub / "note.bin")])  # fetches from 'gin' if needed
+        self.dm.get_content(dataset=str(sub), path=str(sub / "note.bin"))  # fetches from 'gin' if needed
         self.assertTrue((sub / "note.bin").exists() and (sub / "note.bin").stat().st_size == 2)
 
     def test_02_push_to_gin(self):
@@ -455,7 +455,7 @@ class DataManagerPublishGINSiblingTest(unittest.TestCase):
         self.assertFalse(dl.Dataset(str(sub_other)).repo.file_has_content("note.bin"))
 
         # Fetch bytes using DataManager API
-        dm_other.get_data(dataset=str(sub_other), path=str(target), recursive=False)
+        dm_other.get_content(dataset=str(sub_other), path=str(target), recursive=False)
         self.assertTrue(dl.Dataset(str(sub_other)).repo.file_has_content("note.bin"))
         self.assertEqual(target.stat().st_size, 2)
 
@@ -472,7 +472,7 @@ class DataManagerPublishGINSiblingTest(unittest.TestCase):
         self.assertTrue(dl.Dataset(str(sub_other)).repo.file_has_content("note.bin"))
 
         # Drop via DataManager API
-        dm_other.drop_local(dataset=str(sub_other), path=target, recursive=False)
+        dm_other.drop_content(dataset=str(sub_other), path=target, recursive=False)
         self.assertFalse(dl.Dataset(str(sub_other)).repo.file_has_content("note.bin"))
 
     def test_06_remove_gin_repository(self):
