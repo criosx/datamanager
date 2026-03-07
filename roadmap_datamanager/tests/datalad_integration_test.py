@@ -1,12 +1,10 @@
 import os
 import re
 import requests
-import shutil
 import subprocess
 import tempfile
 import unittest
 import uuid
-
 
 from pathlib import Path, PurePosixPath
 
@@ -40,12 +38,12 @@ ENV_READY = not ENV_ERRORS
 
 
 # DataLad import
-try:
-    import datalad
-    from datalad.distribution.dataset import Dataset
-    import datalad.api as dl
-except ImportError:
-    ENV_ERRORS.append("datalad (Python package) not importable in this interpreter")
+# try:
+#    import datalad
+#    from datalad.distribution.dataset import Dataset
+#    import datalad.api as dl
+# except ImportError:
+#    ENV_ERRORS.append("datalad (Python package) not importable in this interpreter")
 
 def create_tmp_dm_instance():
     """
@@ -64,20 +62,6 @@ def create_tmp_dm_instance():
         datalad_profile="text2git",
     )
     return dm, root
-
-
-def fresh_clone(gin_url: str) -> Path:
-    """
-    Clone the published root into a fresh temp dir and install subdatasets (repos only).
-    :param gin_url: (str) URL of the gin repo
-    :return: (Path) the root directory of the cloned repo
-    """
-    other_dir = Path(tempfile.mkdtemp()) / "clone"
-    other_dir.mkdir(parents=True, exist_ok=True)
-    dl.clone(source=gin_url, path=str(other_dir))
-    dl.get(dataset=str(other_dir), path=str(other_dir), recursive=True, get_data=False)
-    return other_dir
-
 
 def has_meta(ds: Path, *, dm_root: Path, rel_path: Path, node_type: str) -> bool:
     dds = Dataset(ds)
@@ -313,15 +297,27 @@ class DataManagerPublishGINSiblingTest(unittest.TestCase):
             private=False,
             recursive=True,
         )
-        sibs = dl.siblings(dataset=str(self.root), action="query", return_type="list")
+        sibs = self.dm.siblings(dataset=str(self.root), action="query")
         gin_urls = [s.get("url") for s in sibs if s.get("name") == "gin" and s.get("url")]
         self.assertTrue(gin_urls, "Could not determine GIN clone URL from siblings()")
         # Prefer HTTPS if both exist
         gin_urls.sort(key=lambda u: (not u.startswith("http"), u))
         return gin_urls[0]
 
+    def _fresh_clone(self, gin_url: str) -> Path:
+        """
+        Clone the published root into a fresh temp dir and install subdatasets (repos only).
+        :param gin_url: (str) URL of the gin repo
+        :return: (Path) the root directory of the cloned repo
+        """
+        other_dir = Path(tempfile.mkdtemp()) / "clone"
+        other_dir.mkdir(parents=True, exist_ok=True)
+        self.dm.clone_from_gin(source_url_root=gin_url, dest=str(other_dir))
+        # self.dl.get(dataset=str(other_dir), path=str(other_dir), recursive=True, get_data=False)
+        return other_dir
+
     def _gin_clone_url(self) -> str:
-        sibs = dl.siblings(dataset=str(self.root), action="query", return_type="list")
+        sibs = self.dm.siblings(dataset=str(self.root), action="query")
         # prefer HTTPS URL for easy parsing
         urls = [s.get("url") for s in sibs if s.get("name") == "gin" and s.get("url")]
         urls.sort(key=lambda u: (not u.startswith("http"), u))
@@ -335,15 +331,15 @@ class DataManagerPublishGINSiblingTest(unittest.TestCase):
 
         # Add a subdataset under the experiment
         sub = cls.root / "p" / "c" / "e" / "analysis"
-        dl.create(path=str(sub), dataset=str(cls.root / "p" / "c" / "e"))
-        dl.save(dataset=str(cls.root), recursive=True, message="add analysis subdataset")
+        cls.dm.create(path=str(sub), dataset=str(cls.root / "p" / "c" / "e"))
+        cls.dm.save(path=str(cls.root), recursive=True, message="add analysis subdataset")
 
         # Make sure there is at least one commit to push everywhere
         (cls.root / "README.md").write_text("root readme\n")
-        dl.save(dataset=str(cls.root), path=[str(cls.root / "README.md")], message="seed root")
+        cls.dm.save(path=str(cls.root / "README.md"), message="seed root")
 
         (sub / "note.bin").write_bytes(b"\x00\x01")
-        dl.save(dataset=str(sub), path=[str(sub / "note.bin")], message="seed subdataset")
+        cls.dm.save(path=str(sub / "note.bin"), message="seed subdataset")
 
         cls.repo_name = f"scidata-{uuid.uuid4().hex}"
 
@@ -399,7 +395,7 @@ class DataManagerPublishGINSiblingTest(unittest.TestCase):
         (self.root / "CHANGES.md").write_text("root change\n")
         sub = self.root / "p" / "c" / "e" / "analysis"
         (sub / "new.bin").write_bytes(b"\xAA\xBB\xCC")
-        dl.save(dataset=str(self.root), recursive=True, message="prepare push_to_remotes test")
+        self.dm.save(path=str(self.root), recursive=True, message="prepare push_to_remotes test")
 
         # Use DataManager API
         self.dm.push_to_remotes(dataset=str(self.root), recursive=True, message="dm push_to_remotes")

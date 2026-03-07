@@ -122,42 +122,6 @@ class DataManager:
             GIN_user=persisted.get("GIN_user")
         )
 
-    def _ensure_upstream(self, *, ds_path: Path, remote: str) -> None:
-        """
-        Ensure the current branch in `ds_path` has an upstream set to `remote`.
-
-        This is a minimal, low-risk fix to avoid ambiguous push targets and has proven
-        to stabilize subsequent DataLad push/annex transfer behavior.
-        :param ds_path: Path to DataLad dataset
-        :param remote: Remote branch
-        """
-        ds_path = Path(ds_path).resolve()
-
-        # Determine current branch (e.g., master/main). If detached HEAD, do nothing.
-        r = self._run_git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=ds_path)
-        branch = (r.stdout or "").strip()
-        if r.returncode != 0 or not branch or branch == "HEAD":
-            if self.cfg.verbose:
-                msg = (r.stderr or r.stdout or "").strip()
-                print(f"[DataManager] Skipping upstream set in {ds_path} (detached/unknown HEAD). {msg}")
-            return
-
-        # If upstream already exists, nothing to do.
-        r_up = self._run_git(["rev-parse", "--symbolic-full-name", "@{u}"], cwd=ds_path)
-        if r_up.returncode == 0:
-            return
-
-        # Set upstream explicitly.
-        r_set = self._run_git(["push", "--set-upstream", remote, branch], cwd=ds_path)
-        if r_set.returncode != 0:
-            raise RuntimeError(
-                f"Failed to set upstream for {ds_path} ({branch} -> {remote}). "
-                f"stdout={r_set.stdout.strip()} stderr={r_set.stderr.strip()}"
-            )
-        if self.cfg.verbose:
-            print(f"[DataManager] Set upstream: {ds_path} ({branch} -> {remote}/{branch})")
-
-
     def _ensure_dataset(self,
                         path: Path,
                         name,
@@ -274,6 +238,19 @@ class DataManager:
         dl.clone(source=source_url, path=str(dest))
         self.pull_from_remotes(dataset=str(dest), recursive=True)             # installs subdatasets
         return dest
+
+    @staticmethod
+    def create(dataset, path=None):
+        """
+        Invoke Datalad's create command
+        :param dataset: (str or Path) the dataset parameter of Datalad's create command
+        :param path: (str or Path) the path parameter of Datalad's create command
+        :return: no return value
+        """
+        dataset = Path(dataset).expanduser().resolve()
+        if path is not None:
+            path = Path(path).expanduser().resolve()
+        dl.create(dataset=dataset, path=path)
 
     def drop_content(self, dataset: str | os.PathLike, path: str | os.PathLike = None, recursive: bool = False) -> None:
         """
@@ -649,10 +626,6 @@ class DataManager:
                 # If ensure_paths fails for any reason, skip upstream setup for this entry.
                 continue
             published_ds_paths.add(Path(entry_ds_path).resolve())
-        # Also include the dataset we started from.
-        # published_ds_paths.add(Path(dataset).resolve())
-        for p in sorted(published_ds_paths):
-            self._ensure_upstream(ds_path=p, remote=sibling_name)
 
         # register GIN URLs in .gitmodules of the parents as the above command placed them only in the
         # .git/ record of the sibling itself
@@ -831,6 +804,19 @@ class DataManager:
             print(f"Added metadata to dataset {targetstr}")
             print(f"Payload:")
             print(extra)
+
+    @staticmethod
+    def siblings(dataset, *, recursive=False, action='query'):
+        """
+        Invokes Datalad's siblings function
+        :param dataset: (str or Path) parent dataset
+        :param recursive: (bool) recursively step into subdatasets
+        :param action: (str) action to perform
+        :return: Datalad's return formatted as a list
+        """
+        dataset = Path(dataset).expanduser().resolve()
+        sibs = dl.siblings(dataset=str(dataset), action=action, recursive=recursive, return_type="list")
+        return sibs if sibs else []
 
     @staticmethod
     def remove_from_tree(dataset: str | os.PathLike, path: str | os.PathLike = None, recursive: bool = False,
