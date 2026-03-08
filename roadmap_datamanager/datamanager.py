@@ -206,11 +206,13 @@ class DataManager:
 
     # ----------------- start datalad api, later to be separated from datamanager -----------------
 
-    def clone_from_gin(self, dest: str | os.PathLike, source_url_root: str = None, user: str = None,
-                       repo: str = None):
+    def clone_from_gin(self, dest: str | os.PathLike, source_url: str = None, source_url_root: str = None,
+                       user: str = None, repo: str = None):
         """
         Clone a superdataset from GIN into dest; install subdatasets (no data).
         :param dest: (str, os.Pathlike) destination path to clone the GIN dataset into
+        :param source_url: (str, optional) source GIN repo URL. If not provided, source_url_root, user, and repo need to
+                           be provided separately
         :param source_url_root: (str) URL root of the GIN dataset to clone, defaults to None
         :param user: (str) GIN unser name for the repository, defaults to None
         :param repo: (str) repo name of the repository, defaults to None
@@ -221,20 +223,21 @@ class DataManager:
         if any(dest.iterdir()):
             raise RuntimeError(f"Destination path {dest} must be empty.")
 
-        if source_url_root is None:
-            source_url_root = f"git@gin.g-node.org:/"
+        if source_url is None:
+            if source_url_root is None:
+                source_url_root = f"git@gin.g-node.org:/"
 
-        if user is None:
-            user = getattr(self.cfg, "GIN_user", None)
             if user is None:
-                raise RuntimeError(f"No username provided.")
+                user = getattr(self.cfg, "GIN_user", None)
+                if user is None:
+                    raise RuntimeError(f"No username provided.")
 
-        if repo is None:
-            repo = getattr(self.cfg, "GIN_repo", None)
             if repo is None:
-                raise RuntimeError(f"No repository name provided.")
+                repo = getattr(self.cfg, "GIN_repo", None)
+                if repo is None:
+                    raise RuntimeError(f"No repository name provided.")
 
-        source_url = source_url_root + user + '/' + repo + '.git'
+            source_url = source_url_root + user + '/' + repo + '.git'
 
         dl.clone(source=source_url, path=str(dest))
         self.pull_from_remotes(dataset=str(dest), recursive=True)             # installs subdatasets
@@ -384,7 +387,7 @@ class DataManager:
         ds = Dataset(str(dataset))
         # ds.save(recursive=recursive, message='save before update from remote')
         ds.update(recursive=recursive, how='merge', sibling=sibling_name)
-        # ds.get(recursive=recursive, get_content=False)
+        ds.get(recursive=recursive, get_data=False)
         ds.save(recursive=recursive, message='updated from remote')
 
     def push_to_remotes(self, dataset: str | os.PathLike, recursive: bool = True, message: str | None = None,

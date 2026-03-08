@@ -311,7 +311,7 @@ class DataManagerPublishGINSiblingTest(unittest.TestCase):
         """
         other_dir = Path(tempfile.mkdtemp()) / "clone"
         other_dir.mkdir(parents=True, exist_ok=True)
-        self.dm.clone_from_gin(source_url_root=gin_url, dest=str(other_dir))
+        self.dm.clone_from_gin(source_url=gin_url, dest=str(other_dir))
         # self.dl.get(dataset=str(other_dir), path=str(other_dir), recursive=True, get_data=False)
         return other_dir
 
@@ -401,22 +401,22 @@ class DataManagerPublishGINSiblingTest(unittest.TestCase):
 
         # Verify by cloning fresh and checking both commits and annex content
         dm2, other = create_tmp_dm_instance()
-        dm2.clone_from_gin(dest=other, source_url_root=gin_url)
+        dm2.clone_from_gin(dest=other, source_url=gin_url)
         self.assertTrue((other / "CHANGES.md").exists(), "Root commit did not reach GIN")
         # Annex file exists as pointer initially; fetch bytes:
         dm2.get_content(dataset=str(other / "p" / "c" / "e" / "analysis"),
-                        path=[str(other / "p" / "c" / "e" / "analysis" / "new.bin")])
+                        path=str(other / "p" / "c" / "e" / "analysis" / "new.bin"))
         self.assertEqual((other / "p" / "c" / "e" / "analysis" / "new.bin").stat().st_size, 3)
 
     def test_03_pull_from_gin(self):
         gin_url = self._ensure_published()
         # Second working copy simulates another computer
-        other = fresh_clone(gin_url)
-        dm_other = DataManager(other, user_name="Frank Heinrich", user_email="fheinrich@cmu.edu")
+        dm_other, other = create_tmp_dm_instance()
+        dm_other.clone_from_gin(dest=other, source_url=gin_url)
 
         # Change on original and push
         (self.root / "NOTE.txt").write_text("note v1\n")
-        dl.save(dataset=str(self.root), path=[str(self.root / "NOTE.txt")], message="v1")
+        self.dm.save(path=str(self.root / "NOTE.txt"), message="v1")
         self.dm.push_to_remotes(dataset=str(self.root), recursive=True, message="push v1")
 
         # Pull into the other clone
@@ -425,7 +425,7 @@ class DataManagerPublishGINSiblingTest(unittest.TestCase):
 
         # Update again and verify second pull
         (self.root / "NOTE.txt").write_text("note v2\n")
-        dl.save(dataset=str(self.root), path=[str(self.root / "NOTE.txt")], message="v2")
+        self.dm.save(path=str(self.root / "NOTE.txt"), message="v2")
         self.dm.push_to_remotes(dataset=str(self.root), recursive=True, message="push v2")
 
         dm_other.pull_from_remotes(dataset=str(other), recursive=True)
@@ -433,36 +433,36 @@ class DataManagerPublishGINSiblingTest(unittest.TestCase):
 
     def test_04_get_data(self):
         gin_url = self._ensure_published()
-        other = fresh_clone(gin_url)
-        dm_other = DataManager(other, user_name="Frank Heinrich", user_email="fheinrich@cmu.edu")
+        dm_other, other = create_tmp_dm_instance()
+        dm_other.clone_from_gin(dest=other, source_url=gin_url)
 
         sub_other = other / "p" / "c" / "e" / "analysis"
         target = sub_other / "note.bin"
 
         # Ensure local content is absent
-        dl.drop(dataset=str(sub_other), path=[str(target)], what="filecontent", reckless="availability")
-        self.assertFalse(dl.Dataset(str(sub_other)).repo.file_has_content("note.bin"))
+        dm_other.drop_content(dataset=str(sub_other), path=str(target))
+        self.assertFalse(dm_other.has_content(dataset=str(sub_other), path="note.bin"))
 
         # Fetch bytes using DataManager API
         dm_other.get_content(dataset=str(sub_other), path=str(target), recursive=False)
-        self.assertTrue(dl.Dataset(str(sub_other)).repo.file_has_content("note.bin"))
+        self.assertTrue(dm_other.has_content(dataset=str(sub_other), path="note.bin"))
         self.assertEqual(target.stat().st_size, 2)
 
     def test_05_drop_local(self):
         gin_url = self._ensure_published()
-        other = fresh_clone(gin_url)
-        dm_other = DataManager(other, user_name="Frank Heinrich", user_email="fheinrich@cmu.edu")
+        dm_other, other = create_tmp_dm_instance()
+        dm_other.clone_from_gin(dest=other, source_url=gin_url)
 
         sub_other = other / "p" / "c" / "e" / "analysis"
         target = sub_other / "note.bin"
 
         # Ensure we have bytes locally first
-        dl.get(dataset=str(sub_other), path=[str(target)])
-        self.assertTrue(dl.Dataset(str(sub_other)).repo.file_has_content("note.bin"))
+        dm_other.get_content(dataset=str(sub_other), path=str(target))
+        self.assertTrue(dm_other.has_content(dataset=str(sub_other), path="note.bin"))
 
         # Drop via DataManager API
         dm_other.drop_content(dataset=str(sub_other), path=target, recursive=False)
-        self.assertFalse(dl.Dataset(str(sub_other)).repo.file_has_content("note.bin"))
+        self.assertFalse(dm_other.has_content(dataset=str(sub_other), path="note.bin"))
 
     def test_06_remove_gin_repository(self):
         def _parse_owner_repo_from_url(url: str) -> tuple[str, str]:
