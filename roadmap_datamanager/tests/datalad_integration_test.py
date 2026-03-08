@@ -63,9 +63,8 @@ def create_tmp_dm_instance():
     )
     return dm, root
 
-def has_meta(ds: Path, *, dm_root: Path, rel_path: Path, node_type: str) -> bool:
-    dds = Dataset(ds)
-    dataset_id = dds.id
+def has_meta(ds: Path, *, dm: DataManager, dm_root: Path, rel_path: Path, node_type: str) -> bool:
+    dataset_id = dm.get_dataset_id(ds)
 
     # POSIX-normalized relative path string, '' for dataset itself
     relposix = '.' if rel_path == Path() else str(PurePosixPath(*rel_path.parts))
@@ -133,10 +132,10 @@ class DataManagerInitTreeTest(unittest.TestCase):
         self.assertTrue((ep / ".datalad").exists())
 
         # meta present at each level
-        self.assertTrue(has_meta(up, dm_root=up, rel_path=Path(), node_type='user'))
-        self.assertTrue(has_meta(pp, dm_root=up, rel_path=Path(), node_type='project'))
-        self.assertTrue(has_meta(cp, dm_root=up, rel_path=Path(), node_type='campaign'))
-        self.assertTrue(has_meta(ep, dm_root=up, rel_path=Path(), node_type='experiment'))
+        self.assertTrue(has_meta(up, dm=dm, dm_root=up, rel_path=Path(), node_type='user'))
+        self.assertTrue(has_meta(pp, dm=dm, dm_root=up, rel_path=Path(), node_type='project'))
+        self.assertTrue(has_meta(cp, dm=dm, dm_root=up, rel_path=Path(), node_type='campaign'))
+        self.assertTrue(has_meta(ep, dm=dm, dm_root=up, rel_path=Path(), node_type='experiment'))
 
 
 @unittest.skipUnless(ENV_READY, "Environment check failed; see TestEnvironment.test_000_requirements_present")
@@ -171,7 +170,7 @@ class DataManagerInstallIntoTreeTest(unittest.TestCase):
 
         # Metadata written at experiment level, including filename in the name field
         dest = cat / src.name
-        self.assertTrue(has_meta(ep, dm_root=up, rel_path=dest.relative_to(ep), node_type="experiment"))
+        self.assertTrue(has_meta(ep, dm=dm, dm_root=up, rel_path=dest.relative_to(ep), node_type="experiment"))
 
     def test_install_folder_recursively_as_subfolders(self):
         dm, root = create_tmp_dm_instance()
@@ -211,7 +210,7 @@ class DataManagerInstallIntoTreeTest(unittest.TestCase):
         self.assertTrue((deep / "b.txt").exists())
 
         # Metadata created on the top dataset for the folder
-        self.assertTrue(has_meta(ep, dm_root=root, rel_path=Path("analysis/bundleA"), node_type="experiment"))
+        self.assertTrue(has_meta(ep, dm=dm, dm_root=root, rel_path=Path("analysis/bundleA"), node_type="experiment"))
 
     def test_install_into_existing_subdataset_with_dest_rel_file(self):
         dm, root = create_tmp_dm_instance()
@@ -249,7 +248,7 @@ class DataManagerInstallIntoTreeTest(unittest.TestCase):
         self.assertTrue((target / "result.csv").exists(), "file not placed into the dest_rel dataset")
 
         # Metadata added to the target dataset, includes filename
-        self.assertTrue(has_meta(ep, dm_root=root, rel_path=Path("analysis/run_001/result.csv"), node_type="experiment"))
+        self.assertTrue(has_meta(ep, dm=dm, dm_root=root, rel_path=Path("analysis/run_001/result.csv"), node_type="experiment"))
 
     def test_install_into_missing_target_raises(self):
         dm, root = create_tmp_dm_instance()
@@ -367,12 +366,12 @@ class DataManagerPublishGINSiblingTest(unittest.TestCase):
         )
 
         # Sibling exists on root
-        root_sibs = dl.siblings(dataset=str(self.root), action="query", return_type="list")
+        root_sibs = self.dm.siblings(dataset=str(self.root), action="query")
         self.assertTrue(any(s.get("name") == "gin" for s in root_sibs), "root missing 'gin' sibling")
 
         # Sibling exists on subdataset
         sub = self.root / "p" / "c" / "e" / "analysis"
-        sub_sibs = dl.siblings(dataset=str(sub), action="query", return_type="list")
+        sub_sibs = self.dm.siblings(dataset=str(sub), action="query")
         self.assertTrue(any(s.get("name") == "gin" for s in sub_sibs), "subdataset missing 'gin' sibling")
 
         # Try a lightweight publish to ensure remote usability (Git + annex content)
@@ -384,7 +383,7 @@ class DataManagerPublishGINSiblingTest(unittest.TestCase):
         # Optional integrity check: drop local content for annexed file and get it back from GIN
         #    This proves annex on GIN is actually serving content.
         self.dm.drop_content(dataset=str(sub), path=str(sub / "note.bin"))
-        self.assertFalse(dl.Dataset(str(sub)).repo.file_has_content("note.bin"))
+        self.assertFalse(self.dm.has_content(dataset=sub, path="note.bin"))
         self.dm.get_content(dataset=str(sub), path=str(sub / "note.bin"))  # fetches from 'gin' if needed
         self.assertTrue((sub / "note.bin").exists() and (sub / "note.bin").stat().st_size == 2)
 
@@ -401,11 +400,12 @@ class DataManagerPublishGINSiblingTest(unittest.TestCase):
         self.dm.push_to_remotes(dataset=str(self.root), recursive=True, message="dm push_to_remotes")
 
         # Verify by cloning fresh and checking both commits and annex content
-        other = fresh_clone(gin_url)
+        dm2, other = create_tmp_dm_instance()
+        dm2.clone_from_gin(dest=other, source_url_root=gin_url)
         self.assertTrue((other / "CHANGES.md").exists(), "Root commit did not reach GIN")
         # Annex file exists as pointer initially; fetch bytes:
-        dl.get(dataset=str(other / "p" / "c" / "e" / "analysis"),
-               path=[str(other / "p" / "c" / "e" / "analysis" / "new.bin")])
+        dm2.get_content(dataset=str(other / "p" / "c" / "e" / "analysis"),
+                        path=[str(other / "p" / "c" / "e" / "analysis" / "new.bin")])
         self.assertEqual((other / "p" / "c" / "e" / "analysis" / "new.bin").stat().st_size, 3)
 
     def test_03_pull_from_gin(self):

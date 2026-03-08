@@ -204,8 +204,10 @@ class DataManager:
             check=False,
         )
 
+    # ----------------- start datalad api, later to be separated from datamanager -----------------
+
     def clone_from_gin(self, dest: str | os.PathLike, source_url_root: str = None, user: str = None,
-                       repo: str = None) -> Path:
+                       repo: str = None):
         """
         Clone a superdataset from GIN into dest; install subdatasets (no data).
         :param dest: (str, os.Pathlike) destination path to clone the GIN dataset into
@@ -220,7 +222,6 @@ class DataManager:
             raise RuntimeError(f"Destination path {dest} must be empty.")
 
         if source_url_root is None:
-            # testcomment
             source_url_root = f"git@gin.g-node.org:/"
 
         if user is None:
@@ -237,7 +238,7 @@ class DataManager:
 
         dl.clone(source=source_url, path=str(dest))
         self.pull_from_remotes(dataset=str(dest), recursive=True)             # installs subdatasets
-        return dest
+        return
 
     @staticmethod
     def create(dataset, path=None):
@@ -288,6 +289,20 @@ class DataManager:
         else:
             _ = self._run_git(["annex", "drop", str(path.name)], cwd=Path(str(dataset)))
 
+    @staticmethod
+    def get_dataset_id(dataset: str | Path) -> str | None:
+        """
+        Retrieve the dataset id
+        :param dataset: (str or Path) the dataset path
+        :return: (str) dataset id or None
+        """
+        dataset = Path(dataset).expanduser().resolve()
+        ds = Dataset(str(dataset))
+        if ds.is_installed():
+            return ds.id
+        else:
+            return None
+
     def get_content(self, dataset: str | os.PathLike, path: str | os.PathLike | list[str | os.PathLike] | None = None,
                     recursive: bool = False) -> None:
         """
@@ -336,6 +351,114 @@ class DataManager:
                 directory = p if p.is_dir() else p.parent
                 name = '--all' if p.is_dir() else str(p.name)
                 _ = self._run_git(["annex", "get", name], cwd=directory)
+
+    @staticmethod
+    def has_content(dataset: str | os.PathLike, path: str | os.PathLike) -> bool:
+        """
+        Checks is content under path is installed in dataset
+        :param dataset:
+        :param path:
+        :return:
+        """
+        dataset = Path(dataset).expanduser().resolve()
+        path = Path(path)
+        if not path.is_absolute():
+            path = dataset / path
+        path = path.expanduser()
+        # do not resolve symlink of potential annexed file
+        path = path.parent.resolve() / path.name
+        relative_path = path.relative_to(dataset)
+
+        return dl.Dataset(str(dataset)).repo.file_has_content(str(relative_path))
+
+    @staticmethod
+    def pull_from_remotes(dataset: str | os.PathLike, recursive: bool = True, sibling_name: str = None) -> None:
+        """
+        Pull latest history from GIN and merge.
+        :param dataset: (str) path to the dataset to update from remotes
+        :param recursive: whether recursively pull from remotes, default True
+        :param sibling_name: (str) name of the sibling datasets to pull from (such as 'gin' for GIN publishing),
+                             default: None (recommended), which self-determines the target to pull from
+        :return: no return value
+        """
+        ds = Dataset(str(dataset))
+        # ds.save(recursive=recursive, message='save before update from remote')
+        ds.update(recursive=recursive, how='merge', sibling=sibling_name)
+        # ds.get(recursive=recursive, get_content=False)
+        ds.save(recursive=recursive, message='updated from remote')
+
+    def push_to_remotes(self, dataset: str | os.PathLike, recursive: bool = True, message: str | None = None,
+                        sibling_name: str = None) -> None:
+        """
+        Save and push commits + annexed content to GIN.
+        :param dataset: (str, os.Pathlike) path to the dataset to push to GIN
+        :param recursive: (bool) whether to recursively push subdatasets
+        :param sibling_name: (str) name of the sibling datasets to push to GIN
+        :param message: (str) optional commit message to push to GIN
+        :return: no return value
+        """
+        ds = Dataset(str(dataset))
+        if message:
+            ds.save(recursive=recursive, message=message)
+        else:
+            ds.save(recursive=recursive)
+
+        sibs = ds.siblings(action="query", return_type="list", recursive=recursive)
+        if sibling_name is None:
+            names = {s["name"] for s in sibs if s.get("name")}
+            sibling_name = "gin" if "gin" in names else ("origin" if "origin" in names else None)
+        if not sibling_name:
+            raise RuntimeError("No publication target configured and no 'gin'/'origin' sibling found.")
+
+        ds.push(to=sibling_name, recursive=recursive, data="nothing")
+        for sibling in sibs:
+            # run annex copy manually, since Datalad implementation proved to be brittle
+            _ = self._run_git(["annex", "copy", "--to", sibling_name, "--all"], cwd=Path(sibling["path"]))
+
+    @staticmethod
+    def remove_siblings(path: str | os.PathLike, name: str = 'gin', recursive: bool = False) -> None:
+        """
+        Removes all sibling datasets from tree.
+        :param path: (str or Path) root path to remove sibling datasets from
+        :param name: (str) sibling name to match
+        :param recursive: (bool) whether to recursively step into subdatasets
+        :return: no return value
+        """
+        path = str(Path(path).resolve())
+        dl.siblings(action='remove', dataset=path, name=name, recursive=recursive)
+
+    def save(self, path: str | os.PathLike, recursive: bool = True, message: str = None) -> None:
+        """
+        Saves the current dataset to disk
+        :param path: (str or Path) path to the dataset or content in dataset
+        :param recursive: (bool) step recursively into subdatasets
+        :param message: (str) optional commit message
+        :return: no return value
+        """
+        path = Path(path).resolve().absolute()
+        ds_root, rel = find_dataset_root_and_rel(path, dm_root=self.cfg.dm_root)
+
+        if str(rel) == '.':
+            # save dataset
+            dl.save(dataset=str(ds_root), recursive=recursive, message=message)
+        else:
+            # just save content, if path is not related to a subdataset
+            dl.save(dataset=str(ds_root), path=str(path), recursive=False, message=message)
+
+    @staticmethod
+    def siblings(dataset, *, recursive=False, action='query'):
+        """
+        Invokes Datalad's siblings function
+        :param dataset: (str or Path) parent dataset
+        :param recursive: (bool) recursively step into subdatasets
+        :param action: (str) action to perform
+        :return: Datalad's return formatted as a list
+        """
+        dataset = Path(dataset).expanduser().resolve()
+        sibs = dl.siblings(dataset=str(dataset), action=action, recursive=recursive, return_type="list")
+        return sibs if sibs else []
+
+    # ----------------- end datalad api, later to be separated from datamanager -----------------
 
     def get_status(self, *,
                    dataset: str | os.PathLike = None,
@@ -674,79 +797,6 @@ class DataManager:
                 f"(recursive={recursive})."
             )
 
-    @staticmethod
-    def pull_from_remotes(dataset: str | os.PathLike, recursive: bool = True, sibling_name: str = None) -> None:
-        """
-        Pull latest history from GIN and merge.
-        :param dataset: (str) path to the dataset to update from remotes
-        :param recursive: whether recursively pull from remotes, default True
-        :param sibling_name: (str) name of the sibling datasets to pull from (such as 'gin' for GIN publishing),
-                             default: None (recommended), which self-determines the target to pull from
-        :return: no return value
-        """
-        ds = Dataset(str(dataset))
-        # ds.save(recursive=recursive, message='save before update from remote')
-        ds.update(recursive=recursive, how='merge', sibling=sibling_name)
-        # ds.get(recursive=recursive, get_content=False)
-        ds.save(recursive=recursive, message='updated from remote')
-
-    def push_to_remotes(self, dataset: str | os.PathLike, recursive: bool = True, message: str | None = None,
-                        sibling_name: str = None) -> None:
-        """
-        Save and push commits + annexed content to GIN.
-        :param dataset: (str, os.Pathlike) path to the dataset to push to GIN
-        :param recursive: (bool) whether to recursively push subdatasets
-        :param sibling_name: (str) name of the sibling datasets to push to GIN
-        :param message: (str) optional commit message to push to GIN
-        :return: no return value
-        """
-        ds = Dataset(str(dataset))
-        if message:
-            ds.save(recursive=recursive, message=message)
-        else:
-            ds.save(recursive=recursive)
-
-        sibs = ds.siblings(action="query", return_type="list", recursive=recursive)
-        if sibling_name is None:
-            names = {s["name"] for s in sibs if s.get("name")}
-            sibling_name = "gin" if "gin" in names else ("origin" if "origin" in names else None)
-        if not sibling_name:
-            raise RuntimeError("No publication target configured and no 'gin'/'origin' sibling found.")
-
-        ds.push(to=sibling_name, recursive=recursive, data="nothing")
-        for sibling in sibs:
-            # run annex copy manually, since Datalad implementation proved to be brittle
-            _ = self._run_git(["annex", "copy", "--to", sibling_name, "--all"], cwd=Path(sibling["path"]))
-
-    @staticmethod
-    def remove_siblings(path: str | os.PathLike, name: str = 'gin', recursive: bool = False) -> None:
-        """
-        Removes all sibling datasets from tree.
-        :param path: (str or Path) root path to remove sibling datasets from
-        :param name: (str) sibling name to match
-        :param recursive: (bool) whether to recursively step into subdatasets
-        :return: no return value
-        """
-        path = str(Path(path).resolve())
-        dl.siblings(action='remove', dataset=path, name=name, recursive=recursive)
-
-    def save(self, path: str | os.PathLike, recursive: bool = True, message: str = None) -> None:
-        """
-        Saves the current dataset to disk
-        :param path: (str or Path) path to the dataset or content in dataset
-        :param recursive: (bool) step recursively into subdatasets
-        :param message: (str) optional commit message
-        :return: no return value
-        """
-        path = Path(path).resolve().absolute()
-        ds_root, rel = find_dataset_root_and_rel(path, dm_root=self.cfg.dm_root)
-
-        if str(rel) == '.':
-            # save dataset
-            dl.save(dataset=str(ds_root), recursive=recursive, message=message)
-        else:
-            # just save content, if path is not related to a subdataset
-            dl.save(dataset=str(ds_root), path=str(path), recursive=False, message=message)
 
     def save_current_dm_configuration(self):
         """
@@ -805,18 +855,6 @@ class DataManager:
             print(f"Payload:")
             print(extra)
 
-    @staticmethod
-    def siblings(dataset, *, recursive=False, action='query'):
-        """
-        Invokes Datalad's siblings function
-        :param dataset: (str or Path) parent dataset
-        :param recursive: (bool) recursively step into subdatasets
-        :param action: (str) action to perform
-        :return: Datalad's return formatted as a list
-        """
-        dataset = Path(dataset).expanduser().resolve()
-        sibs = dl.siblings(dataset=str(dataset), action=action, recursive=recursive, return_type="list")
-        return sibs if sibs else []
 
     @staticmethod
     def remove_from_tree(dataset: str | os.PathLike, path: str | os.PathLike = None, recursive: bool = False,
