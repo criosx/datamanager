@@ -26,6 +26,9 @@ ALLOWED_CATEGORIES = [
 ]
 
 
+# -------------- already cleanly separated Datalad-using functions to make datamanager independent ------
+
+
 class DataManager:
     """
     ROADMAP Data Manager class.
