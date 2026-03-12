@@ -361,10 +361,10 @@ class DataManager:
     @staticmethod
     def has_content(dataset: str | os.PathLike, path: str | os.PathLike) -> bool:
         """
-        Checks is content under path is installed in dataset
-        :param dataset:
-        :param path:
-        :return:
+        Checks is content under path is installed (locally available) in dataset, as opposed to being remote
+        :param dataset: path to dataset
+        :param path: absolute or relative path to content file
+        :return: (bool) whether the conten is locally available
         """
         dataset = Path(dataset).expanduser().resolve()
         path = Path(path)
@@ -376,6 +376,30 @@ class DataManager:
         relative_path = path.relative_to(dataset)
 
         return dl.Dataset(str(dataset)).repo.file_has_content(str(relative_path))
+
+    @staticmethod
+    def has_sibling(dataset: str | os.PathLike, sib_name: str | None = None) -> bool:
+        """
+        Checks is sibling under path is installed in dataset
+        :param dataset: path to dataset
+        :param sib_name: (str) sibling name (i.e. GIN)
+        :return: (bool) Whether a sibling exists in dataset
+        """
+
+        dataset = Path(dataset).expanduser().resolve()
+        ds = Dataset(str(dataset))
+
+        if not ds.is_installed():
+            return False
+
+        sibs = dl.siblings(dataset=str(dataset), action="query", return_type="list", recursive=False)
+        if sibs and sib_name is None:
+            # any sibling is acceptable
+            return True
+
+        names = {s["name"] for s in sibs if s.get("name")}
+        return sib_name in names
+
 
     @staticmethod
     def pull_from_remotes(dataset: str | os.PathLike, recursive: bool = True, sibling_name: str = None) -> None:
