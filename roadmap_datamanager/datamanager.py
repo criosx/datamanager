@@ -610,16 +610,25 @@ class DataManager:
                 _ = self._run_git(["annex", "copy", "--to", sibling_name, "--all"], cwd=Path(sibling["path"]))
 
     @staticmethod
-    def remove_siblings(path: str | os.PathLike, name: str = 'gin', recursive: bool = False) -> None:
+    def remove_siblings(dataset: str | os.PathLike, sibling_name: str = 'gin', recursive: bool = False) -> None:
         """
         Removes all sibling datasets from tree.
-        :param path: (str or Path) root path to remove sibling datasets from
-        :param name: (str) sibling name to match
+        :param dataset: (str or Path) root path to remove sibling datasets from
+        :param sibling_name: (str) sibling name to match
         :param recursive: (bool) whether to recursively step into subdatasets
         :return: no return value
         """
-        path = str(Path(path).resolve())
-        dl.siblings(action='remove', dataset=path, name=name, recursive=recursive)
+        ds_path = Path(dataset).expanduser().resolve()
+        ds = Dataset(str(ds_path))
+
+        if sibling_name is None:
+            sibs = ds.siblings(action="query", return_type="list", recursive=recursive)
+            names = {s["name"] for s in sibs if s.get("name")}
+            sibling_name = "gin" if "gin" in names else ("origin" if "origin" in names else None)
+        if not sibling_name:
+            raise RuntimeError("No remote target configured and no 'gin'/'origin' sibling found.")
+
+        dl.siblings(action='remove', dataset=ds_path, name=sibling_name, recursive=recursive)
 
     def save(self, path: str | os.PathLike, recursive: bool = True, message: str = None) -> None:
         """

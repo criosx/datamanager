@@ -640,8 +640,8 @@ class MainWindow(QMainWindow):
             return
 
         # remove all known remote siblings
-        self.dm.remove_siblings(path=self.dm.cfg.dm_root, name='gin', recursive=True)
-        self.dm.remove_siblings(path=self.dm.cfg.dm_root, name='origin', recursive=True)
+        self.dm.remove_siblings(dataset=self.dm.cfg.dm_root, sibling_name='gin', recursive=True)
+        self.dm.remove_siblings(dataset=self.dm.cfg.dm_root, sibling_name='origin', recursive=True)
         self.dm_publish_to_remote(entire_tree=True, existing='reconfigure')
 
     def dm_publish_to_remote(self, entire_tree=False, existing='skip'):
