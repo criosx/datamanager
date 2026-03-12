@@ -364,6 +364,7 @@ class DataManager:
         sibling_name: str = "gin",
         branch: str | None = None,
         fetch: bool = True,
+        from_parent: bool = False
     ) -> Dict[str, Any]:
         """
         Determine whether a local Git/DataLad dataset branch is up to date with, ahead of,
@@ -381,11 +382,21 @@ class DataManager:
         :param sibling_name: Preferred remote name, e.g. 'gin' or 'origin'.
         :param branch: Optional local branch name. Defaults to the current branch.
         :param fetch: Whether to run `git fetch <remote_name>` before comparison.
+        :param from_parent: whether to apply this function to the parent of the dataset instead
         :return: Dictionary with status information.
         """
         dataset = Path(dataset).expanduser().resolve()
-        ds = Dataset(str(dataset))
-        if not ds.is_installed():
+        if from_parent:
+            child = Dataset(str(dataset))
+            if child.is_installed():
+                ds = child.parent
+            else:
+                # It's o.k. that this is not the parent. ds is not installed and will be rejected a few lines below.
+                ds = child
+        else:
+            ds = Dataset(str(dataset))
+
+        if ds is not None and not ds.is_installed():
             return {
                 "ok": False,
                 "state": "not_dataset",
