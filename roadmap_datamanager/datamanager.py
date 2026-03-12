@@ -358,6 +358,161 @@ class DataManager:
                 name = '--all' if p.is_dir() else str(p.name)
                 _ = self._run_git(["annex", "get", name], cwd=directory)
 
+    def get_git_sync_status(
+        self,
+        dataset: str | os.PathLike,
+        sibling_name: str = "gin",
+        branch: str | None = None,
+        fetch: bool = True,
+    ) -> Dict[str, Any]:
+        """
+        Determine whether a local Git/DataLad dataset branch is up to date with, ahead of,
+        behind, or diverged from its remote tracking branch.
+
+        Notes:
+          - This compares Git commit history only. It does not verify git-annex content
+            availability on the remote.
+          - If `branch` is not provided, the current checked-out branch is used.
+          - If an upstream tracking branch is configured for the selected branch, that
+            upstream is preferred. Otherwise, the method falls back to `{remote_name}/{branch}`
+            if such a remote branch exists.
+
+        :param dataset: Path to the Git/DataLad repository.
+        :param sibling_name: Preferred remote name, e.g. 'gin' or 'origin'.
+        :param branch: Optional local branch name. Defaults to the current branch.
+        :param fetch: Whether to run `git fetch <remote_name>` before comparison.
+        :return: Dictionary with status information.
+        """
+        dataset = Path(dataset).expanduser().resolve()
+        ds = Dataset(str(dataset))
+        if not ds.is_installed():
+            return {
+                "ok": False,
+                "state": "not_dataset",
+                "message": f"Not an installed dataset: {dataset}",
+                "repo_path": str(dataset),
+            }
+
+        has_remote, remote_info = self.has_sibling(dataset=dataset, sib_name=sibling_name)
+        if not has_remote:
+            return {
+                "ok": True,
+                "state": "no_remote",
+                "message": f"No sibling named '{sibling_name}' is configured.",
+                "repo_path": str(dataset),
+                "remote_name": sibling_name,
+                "remote": remote_info,
+            }
+
+        if fetch:
+            fetch_res = self._run_git(["fetch", sibling_name], cwd=dataset)
+            if fetch_res.returncode != 0:
+                return {
+                    "ok": False,
+                    "state": "fetch_failed",
+                    "message": fetch_res.stderr.strip() or fetch_res.stdout.strip() or "git fetch failed.",
+                    "repo_path": str(dataset),
+                    "remote_name": sibling_name,
+                }
+
+        if branch is None:
+            branch_res = self._run_git(["branch", "--show-current"], cwd=dataset)
+            if branch_res.returncode != 0:
+                return {
+                    "ok": False,
+                    "state": "branch_failed",
+                    "message": branch_res.stderr.strip() or branch_res.stdout.strip() or
+                               "Could not determine current branch.",
+                    "repo_path": str(dataset),
+                    "remote_name": sibling_name,
+                }
+            branch = branch_res.stdout.strip()
+
+        if not branch:
+            return {
+                "ok": True,
+                "state": "detached_head",
+                "message": "Repository is in detached HEAD state.",
+                "repo_path": str(dataset),
+                "remote_name": sibling_name,
+            }
+
+        upstream_res = self._run_git(
+            ["rev-parse", "--abbrev-ref", "--symbolic-full-name", f"{branch}@{{upstream}}"],
+            cwd=dataset,
+        )
+        if upstream_res.returncode == 0:
+            upstream = upstream_res.stdout.strip()
+        else:
+            candidate_upstream = f"{sibling_name}/{branch}"
+            verify_res = self._run_git(["rev-parse", "--verify", candidate_upstream], cwd=dataset)
+            if verify_res.returncode != 0:
+                return {
+                    "ok": True,
+                    "state": "no_upstream",
+                    "message": (
+                        f"No upstream tracking branch is configured for local branch '{branch}', "
+                        f"and remote branch '{candidate_upstream}' was not found."
+                    ),
+                    "repo_path": str(dataset),
+                    "remote_name": sibling_name,
+                    "branch": branch,
+                }
+            upstream = candidate_upstream
+
+        counts_res = self._run_git(
+            ["rev-list", "--left-right", "--count", f"{branch}...{upstream}"],
+            cwd=dataset,
+        )
+        if counts_res.returncode != 0:
+            return {
+                "ok": False,
+                "state": "compare_failed",
+                "message": counts_res.stderr.strip() or counts_res.stdout.strip() or "Branch comparison failed.",
+                "repo_path": str(dataset),
+                "remote_name": sibling_name,
+                "branch": branch,
+                "upstream": upstream,
+            }
+
+        counts_text = counts_res.stdout.strip()
+        try:
+            local_only_str, remote_only_str = counts_text.split()
+            local_only = int(local_only_str)
+            remote_only = int(remote_only_str)
+        except ValueError:
+            return {
+                "ok": False,
+                "state": "parse_failed",
+                "message": f"Unexpected rev-list output: {counts_text!r}",
+                "repo_path": str(dataset),
+                "remote_name": sibling_name,
+                "branch": branch,
+                "upstream": upstream,
+            }
+
+        if local_only == 0 and remote_only == 0:
+            state = "up_to_date"
+        elif local_only > 0 and remote_only == 0:
+            state = "ahead"
+        elif local_only == 0 and remote_only > 0:
+            state = "behind"
+        else:
+            state = "diverged"
+
+        return {
+            "ok": True,
+            "state": state,
+            "message": None,
+            "repo_path": str(dataset),
+            "remote_name": sibling_name,
+            "branch": branch,
+            "upstream": upstream,
+            "local_only_commits": local_only,
+            "remote_only_commits": remote_only,
+            "remote": remote_info,
+        }
+
     @staticmethod
     def has_content(dataset: str | os.PathLike, path: str | os.PathLike) -> bool:
         """
@@ -378,27 +533,30 @@ class DataManager:
         return dl.Dataset(str(dataset)).repo.file_has_content(str(relative_path))
 
     @staticmethod
-    def has_sibling(dataset: str | os.PathLike, sib_name: str | None = None) -> bool:
+    def has_sibling(dataset: str | os.PathLike, sib_name: str | None = None):
         """
         Checks is sibling under path is installed in dataset
         :param dataset: path to dataset
         :param sib_name: (str) sibling name (i.e. GIN)
-        :return: (bool) Whether a sibling exists in dataset
+        :return: (bool) Whether a sibling exists in dataset, (dict) sibling query result
         """
 
         dataset = Path(dataset).expanduser().resolve()
         ds = Dataset(str(dataset))
 
         if not ds.is_installed():
-            return False
+            return False, None
 
         sibs = dl.siblings(dataset=str(dataset), action="query", return_type="list", recursive=False)
         if sibs and sib_name is None:
             # any sibling is acceptable
-            return True
+            return True, sibs[0]
 
-        names = {s["name"] for s in sibs if s.get("name")}
-        return sib_name in names
+        dicts = [s for s in sibs if s.get("name") and s["name"] == sib_name]
+        if dicts:
+            return True, dicts[0]
+        else:
+            return False, None
 
 
     @staticmethod
@@ -418,13 +576,14 @@ class DataManager:
         ds.save(recursive=recursive, message='updated from remote')
 
     def push_to_remotes(self, dataset: str | os.PathLike, recursive: bool = True, message: str | None = None,
-                        sibling_name: str = None) -> None:
+                        sibling_name: str = None, push_annex_data: bool = True) -> None:
         """
         Save and push commits + annexed content to GIN.
         :param dataset: (str, os.Pathlike) path to the dataset to push to GIN
         :param recursive: (bool) whether to recursively push subdatasets
         :param sibling_name: (str) name of the sibling datasets to push to GIN
         :param message: (str) optional commit message to push to GIN
+        :param push_annex_data: (bool) whether to push annexed content to GIN
         :return: no return value
         """
         ds = Dataset(str(dataset))
@@ -441,9 +600,10 @@ class DataManager:
             raise RuntimeError("No publication target configured and no 'gin'/'origin' sibling found.")
 
         ds.push(to=sibling_name, recursive=recursive, data="nothing")
-        for sibling in sibs:
-            # run annex copy manually, since Datalad implementation proved to be brittle
-            _ = self._run_git(["annex", "copy", "--to", sibling_name, "--all"], cwd=Path(sibling["path"]))
+        if push_annex_data:
+            for sibling in sibs:
+                # run annex copy manually, since Datalad implementation proved to be brittle
+                _ = self._run_git(["annex", "copy", "--to", sibling_name, "--all"], cwd=Path(sibling["path"]))
 
     @staticmethod
     def remove_siblings(path: str | os.PathLike, name: str = 'gin', recursive: bool = False) -> None:
@@ -717,9 +877,16 @@ class DataManager:
         )
         """
 
-    def publish_gin_sibling(self, *, sibling_name: str = "gin", repo_name: str = None, dataset=None,
-                            access_protocol: str = "ssh", credential: Optional[str] = None, private: bool = False,
-                            recursive: bool = False, existing: str = 'skip') -> None:
+    def publish_gin_sibling(self, *,
+                            sibling_name: str = "gin",
+                            repo_name: str = None,
+                            dataset=None,
+                            access_protocol: str = "ssh",
+                            credential: Optional[str] = None,
+                            private: bool = False,
+                            recursive: bool = False,
+                            existing: str = 'skip',
+                            push_annex_data = True) -> None:
         """
         Creates and pushes a gin sibling dataset to {repo_name}.
         Important Note: The operation must be started from root or a dataset that has already a gin sibling. This is
@@ -735,6 +902,7 @@ class DataManager:
         :param private: (bool) privacy of the published dataset, default False
         :param recursive: (bool) whether to step recursivly into nested subdatasets, default False
         :param existing: (str) how to deal with existing siblings (see datalad manual), default 'skip'
+        :param push_annex_data: (bool) whether to push annex data to the remote
         :return: no return value
         """
 
@@ -813,9 +981,11 @@ class DataManager:
         # make sure all changes are saved before publishing to GIN
         ds.save(recursive=recursive, message='GIN publishing')
         ds.push(to=sibling_name, recursive=recursive, data='nothing')
+
         # copy annex data manually, as ds.push had trouble doing so
-        for p in sorted(published_ds_paths):
-            _ = self._run_git(["annex", "copy", "--to", sibling_name, "--all"], cwd=p)
+        if push_annex_data:
+            for p in sorted(published_ds_paths):
+                _ = self._run_git(["annex", "copy", "--to", sibling_name, "--all"], cwd=p)
 
         if ds_parent is not None:
             ds_parent.save(recursive=False, message='GIN publishing')
