@@ -389,7 +389,7 @@ class DataManager:
         if from_parent:
             child = Dataset(str(dataset))
             if child.is_installed():
-                ds = child.parent
+                ds = child.get_superdataset()
             else:
                 # It's o.k. that this is not the parent. ds is not installed and will be rejected a few lines below.
                 ds = child
