@@ -921,9 +921,11 @@ class DataManager:
             repo_name = self.cfg.GIN_repo
         if str(relposix) != '.':
             repo_name = repo_name + '-' + '-'.join(relpath.parts)
-            ds_parent = Dataset(ds_path.parent)
+            ds_parent_path = ds_path.parent
+            ds_parent = Dataset(ds_parent_path)
         else:
             ds_parent = None
+            ds_parent_path = None
 
         # Create/reconfigure GIN sibling with content hosting
         siblist = ds.create_sibling_gin(
@@ -982,22 +984,19 @@ class DataManager:
                 ]
             )
 
-        # make sure all changes are saved before publishing to GIN
-        ds.save(recursive=recursive, message='GIN publishing')
-
+        # save and push to remotes
         self.push_to_remotes(dataset=str(dataset), recursive=recursive, message='GIN publishing',
-                             sibling_name=sibling_name, push_annex_data=True)
+                             sibling_name=sibling_name, push_annex_data=push_annex_data)
 
-        if ds_parent is not None:
-            ds_parent.save(recursive=False, message='GIN publishing')
-            ds_parent.push(to=sibling_name, recursive=False, data='nothing')
+        if ds_parent_path is not None:
+            self.push_to_remotes(dataset=str(ds_parent_path), recursive=False, message='GIN publishing',
+                                 sibling_name=sibling_name, push_annex_data=False)
 
         if self.cfg.verbose:
             print(
                 f"[Datamanager] Reset sibling '{sibling_name}' at GIN repo '{repo_name}' and pushed "
                 f"(recursive={recursive})."
             )
-
 
     def save_current_dm_configuration(self):
         """
