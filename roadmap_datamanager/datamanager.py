@@ -602,7 +602,11 @@ class DataManager:
         ds.push(to=sibling_name, recursive=recursive, data="nothing")
         if push_annex_data:
             for sibling in sibs:
+                if sibling["name"] != sibling_name:
+                    continue
                 # run annex copy manually, since Datalad implementation proved to be brittle
+                _ = self._run_git(["config", f"remote.{sibling_name}.annex-ignore", "false"],
+                                  cwd=Path(sibling["path"]))
                 _ = self._run_git(["annex", "copy", "--to", sibling_name, "--all"], cwd=Path(sibling["path"]))
 
     @staticmethod
@@ -980,12 +984,9 @@ class DataManager:
 
         # make sure all changes are saved before publishing to GIN
         ds.save(recursive=recursive, message='GIN publishing')
-        ds.push(to=sibling_name, recursive=recursive, data='nothing')
 
-        # copy annex data manually, as ds.push had trouble doing so
-        if push_annex_data:
-            for p in sorted(published_ds_paths):
-                _ = self._run_git(["annex", "copy", "--to", sibling_name, "--all"], cwd=p)
+        self.push_to_remotes(dataset=str(dataset), recursive=recursive, message='GIN publishing',
+                             sibling_name=sibling_name, push_annex_data=True)
 
         if ds_parent is not None:
             ds_parent.save(recursive=False, message='GIN publishing')
