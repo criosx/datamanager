@@ -26,6 +26,7 @@ class DataManagerConfig:
     # Defaults
     default_project: Optional[str] = None
     default_campaign: Optional[str] = None
+    default_experiment: Optional[str] = None
 
     # DataLad behavior
     datalad_profile: Optional[str] = None

@@ -486,7 +486,7 @@ class MainWindow(QMainWindow):
 
     def bootstrap_datamanager(self):
         """
-        Try to loas a persistent config at GUI startup
+        Try to load a persistent config at GUI startup
         :return: no return value
         """
         try:

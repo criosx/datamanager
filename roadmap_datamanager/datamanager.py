@@ -15,7 +15,7 @@ from datalad.distribution.dataset import Dataset
 
 # ROADMAP datamanager modules
 from roadmap_datamanager import configuration as dmc
-from roadmap_datamanager.helpers import ssh_to_https, ensure_paths, find_dataset_root_and_rel
+from roadmap_datamanager import helpers
 from roadmap_datamanager import metadata as md
 
 
@@ -29,6 +29,41 @@ ALLOWED_CATEGORIES = [
 # -------------- already cleanly separated Datalad-using functions to make datamanager independent ------
 
 
+def get_dataset_nodetype(ds_path: str | Path):
+    """
+    Determine the nodetype of a dataset based on its position to the datamanager root directory. Node types are
+    'root', 'project', 'campaign', and 'experiment'. The nodetype 'below-experiment' is given for folders below
+    the experiment level, which are not a dataset.
+    :param ds_path: (str or Path) dataset path
+    :return: (str, str | Path) node type, path to dataset
+    """
+    ds_path = Path(str(ds_path)).expanduser().resolve()
+    stepup_counter = 0
+
+    if ds_path.is_file() or ds_path.is_symlink():
+        ds_path = ds_path.parent
+    ds = Dataset(ds_path)
+
+    while not ds.is_installed():
+        has_parent = ds_path.parent != ds_path
+        if has_parent:
+            ds_path = ds_path.parent
+            ds = Dataset(ds_path)
+            stepup_counter += 1
+        else:
+            return 'outside datalad', None
+
+    meta = md.Metadata(ds_path)
+    metadata = meta.get()
+    if 'dataset_type' not in metadata:
+        return 'not a datamanager repository', ds_path
+
+    node_type = metadata["dataset_type"]
+    if node_type == 'experiment' and stepup_counter == 0:
+        node_type = 'below-experiment'
+    return node_type, ds_path
+
+
 class DataManager:
     """
     ROADMAP Data Manager class.
@@ -38,34 +73,81 @@ class DataManager:
         root: os.PathLike | str | None = None,
         user_name: str | None = None,
         user_email: str | None = None,
-        *,
         default_project: Optional[str] = None,
         default_campaign: Optional[str] = None,
+        default_experiment: Optional[str] = None,
+        env: Optional[Dict[str, str]] = None,
+        GIN_url: Optional[str] = None,
+        GIN_repo: Optional[str] = None,
+        GIN_user: Optional[str] = None,
+        bootstrap_path: Optional[str, Path] = None,
         datalad_profile: Optional[str] = "text2git",
         extractor_name: str = "datamanager_v1",
         extractor_version: str = "1.0",
         verbose: bool = True,
-        env: Optional[Dict[str, str]] = None,
-        GIN_url: Optional[str] = None,
-        GIN_repo: Optional[str] = None,
-        GIN_user: Optional[str] = None
     ) -> None:
+        """
+        Initializes the DataManager class. Provided keyword arguments root too GIN_user will overwrite those from the
+        persistent configuration. If the bootstrap path is given, the datamanager will be initialized from that
+        directory, walking up the file tree, identifying root (username), project, campaign, and experiment as much
+        as possible from the stored metadata. This information will overwrite any other keyword arguments given.
+
+        :param root: (str | PathLike | None) The root of the repository to initialize.
+        :param user_name: (str | None) the user name .
+        :param user_email:  (str | None) user email
+        :param default_project: (str | None) default project (for GUI and such)
+        :param default_campaign: (str | None) default campaign
+        :param default_experiment: (str | None) default experiment
+        :param datalad_profile: (str | None) default profile
+        :param extractor_name: (str | None) The name of the metadata extractor.
+        :param extractor_version: (str | None) The version of the metadata extractor.
+        :param verbose: (bool) output verosity
+        :param env: (dict) environment variables
+        :param GIN_url: (str | None) GIN URL
+        :param GIN_repo: (str | None) GIN repository name
+        :param GIN_user: (str | None) GIN user name
+        :param bootstrap_path: (str | PathLike | None) bootstrap path
+        """
 
         # load persistent configuration
         persisted = dmc.load_persistent_cfg()
 
         # compute effective values (= persisted ⟵ kwargs)
         eff_root = root or persisted.get("dm_root", ".")
-        eff_user_name = user_name or persisted.get("user_name")
-        eff_user_email = user_email or persisted.get("user_email")
+        eff_user_name = user_name or persisted.get("user_name", "default")
+        eff_user_email = user_email or persisted.get("user_email", "default")
         eff_default_project = default_project or persisted.get("default_project")
         eff_default_campaign = default_campaign or persisted.get("default_campaign")
+        eff_default_experiment = default_experiment or persisted.get("default_experiment")
         eff_GIN_url = GIN_url or persisted.get("GIN_url")
         eff_GIN_repo = GIN_repo or persisted.get("GIN_repo")
         eff_GIN_user = GIN_user or persisted.get("GIN_user")
 
-        if eff_user_name is None or eff_user_email is None:
-            raise RuntimeError("DataManager requires user_name and user_email (none persisted yet).")
+        if bootstrap_path is not None:
+            bp = Path(str(bootstrap_path)).expanduser().resolve()
+            while True:
+                node_type, ds_path = get_dataset_nodetype(bp)
+                meta = md.Metadata(ds_path)
+                metadata = meta.get()
+                if node_type == 'root':
+                    eff_root = str(ds_path)
+                    eff_user_name = metadata['user_name']
+                    eff_user_email = metadata['user_email']
+                    break
+                elif node_type == 'project':
+                    eff_default_project = metadata['name']
+                elif node_type == 'campaign':
+                    eff_default_campaign = metadata['name']
+                elif node_type == 'experiment':
+                    eff_default_experiment = metadata['name']
+                elif node_type == 'below-experiment':
+                    # any below-experiment content will still return the lowest hierarchy dataset, i.e, the experiment
+                    eff_default_experiment = metadata['name']
+                else:
+                    raise RuntimeError(f"Encountered unknown dataset type {node_type}. Cannot bootstrap datamanager.")
+
+                bp = Path(str(bootstrap_path)).expanduser().resolve().parent
+
 
         # build config
         root_path = Path(eff_root).expanduser().resolve()
@@ -76,6 +158,7 @@ class DataManager:
             user_email=eff_user_email,
             default_project=eff_default_project,
             default_campaign=eff_default_campaign,
+            default_experiment=eff_default_experiment,
             datalad_profile=datalad_profile,
             extractor_name=extractor_name,
             extractor_version=extractor_version,
@@ -85,17 +168,7 @@ class DataManager:
             GIN_repo=eff_GIN_repo,
             GIN_user=eff_GIN_user
         )
-
-        dmc.save_persistent_cfg({
-            "dm_root": str(root_path),
-            "user_name": self.cfg.user_name,
-            "user_email": self.cfg.user_email,
-            "default_project": self.cfg.default_project,
-            "default_campaign": self.cfg.default_campaign,
-            "GIN_url": self.cfg.GIN_url,
-            "GIN_repo": self.cfg.GIN_repo,
-            "GIN_user": self.cfg.GIN_user
-        })
+        self.save_current_dm_configuration()
 
         if self.cfg.verbose:
             print(f"[DataManager] root={root_path}")
@@ -129,6 +202,7 @@ class DataManager:
                         path: Path,
                         name,
                         superds: Optional[Path],
+                        dataset_type: str = 'below-experiment',
                         register_installed: bool = False,
                         force: bool = False,
                         do_not_save:bool = False) -> None:
@@ -169,7 +243,7 @@ class DataManager:
 
         # dataset save here is not necessary, as it is saved in save_meta
         # dl.save(dataset=str(path), recursive=recursive_save, message=f"Initialized dataset.")
-        self.save_meta(path, name=name, do_not_save=do_not_save)
+        self.save_meta(path, name=name, dataset_type=dataset_type, do_not_save=do_not_save)
 
     @staticmethod
     def _parse_iso(ts: str) -> datetime:
@@ -641,7 +715,10 @@ class DataManager:
 
         dl.siblings(action='remove', dataset=ds_path, name=sibling_name, recursive=recursive)
 
-    def save(self, path: str | os.PathLike, recursive: bool = True, message: str = None) -> None:
+    def save(self,
+             path: str | os.PathLike,
+             recursive: bool = True,
+             message: str = None) -> None:
         """
         Saves the current dataset to disk
         :param path: (str or Path) path to the dataset or content in dataset
@@ -650,13 +727,13 @@ class DataManager:
         :return: no return value
         """
         path = Path(path).resolve().absolute()
-        ds_root, rel = find_dataset_root_and_rel(path, dm_root=self.cfg.dm_root)
+        ds_root, rel = helpers.find_dataset_root_and_rel(path, dm_root=self.cfg.dm_root)
 
         if str(rel) == '.':
             # save dataset
             dl.save(dataset=str(ds_root), recursive=recursive, message=message)
         else:
-            # just save content, if path is not related to a subdataset
+            # just save content, if path is not that of a subdataset
             dl.save(dataset=str(ds_root), path=str(path), recursive=False, message=message)
 
     @staticmethod
@@ -717,27 +794,37 @@ class DataManager:
         ep = cp / experiment if (cp and experiment) else None
 
         # Ensure/create datasets
-        self._ensure_dataset(up, superds=None, name=self.cfg.user_name, force=force, do_not_save=force)
+        self._ensure_dataset(up, superds=None, name=self.cfg.user_name, dataset_type='root', force=force,
+                             do_not_save=force)
 
         if pp:
-            self._ensure_dataset(pp, superds=up, name=project, force=force, do_not_save=force)
+            self._ensure_dataset(pp, superds=up, name=project, dataset_type='project', force=force, do_not_save=force)
         if cp:
-            self._ensure_dataset(cp, superds=pp, name=campaign, force=force, do_not_save=force)
+            self._ensure_dataset(cp, superds=pp, name=campaign, dataset_type='campaign', force=force, do_not_save=force)
         if ep:
-            self._ensure_dataset(ep, superds=cp, name=experiment, force=force, do_not_save=force)
+            self._ensure_dataset(ep, superds=cp, name=experiment, dataset_type='experiment', force=force,
+                                 do_not_save=force)
 
         if force:
-            dl.save(dataset=up, recursive=True)
+            self.save(path=up, recursive=True)
 
         if self.cfg.verbose:
             print(f"Initialized/verified tree at {up} for "
                   f"{self.cfg.user_name}/" + "/".join(x for x in (project, campaign, experiment) if x))
         return ep
 
-    def install_into_tree(self, source: os.PathLike | str, *, project: Optional[str], campaign: Optional[str],
-                          experiment: str, category: str, dest_rel: Optional[os.PathLike | str] = None,
-                          rename: Optional[str] = None, move: bool = False, metadata: Optional[Dict[str, Any]]
-                          = None, overwrite: bool = False) -> Path:
+    def install_into_tree(self,
+                          source: os.PathLike | str,
+                          *,
+                          project: Optional[str],
+                          campaign: Optional[str],
+                          experiment: str,
+                          category: str,
+                          dest_rel: Optional[os.PathLike | str] = None,
+                          rename: Optional[str] = None,
+                          move: bool = False,
+                          metadata: Optional[Dict[str, Any]] = None,
+                          overwrite: bool = False) -> Path:
         """
         Install a file or folder into {root}/{project}/{campaign}/{experiment}/{category}
         or into an *existing* dataset below the category when dest_rel is given.
@@ -809,10 +896,11 @@ class DataManager:
         self.save_meta(ep, path=final_target.relative_to(ep), extra=metadata)
         # not necessary, as save_meta alreaddy saved the experiment, recursive=True below should also
         # be redundant
-        # dl.save(dataset=str(ep), recursive=True, message=f"Installed {rename or src.name}")
+        # self.save(dataset=str(ep), recursive=True, message=f"Installed {rename or src.name}")
         return final_target
 
-    def load_meta(self, ds_path: str | Path, *, path: str | Path | None = None, mode: str = 'meta') -> Dict[str, Any]:
+    @staticmethod
+    def load_meta(ds_path: str | Path, *, path: str | Path | None = None, mode: str = 'meta') -> Dict[str, Any]:
         """
         Return the metadata for `path` in `ds_path`.
         :param ds_path: (str, os.PathLike) path to the dataset to iterate over
@@ -820,8 +908,8 @@ class DataManager:
         :param mode: (str) 'envelope' to obtain entire recore, 'meta' to obtain only the actual payload
         :return: metadata dict
         """
-        ds_path, path, absolute_path, relposix = ensure_paths(ds_path, path)
-        meta = md.Metadata(ds_root=ds_path, path=path, dm_root=self.cfg.dm_root)
+        ds_path, path, absolute_path, relposix = helpers.ensure_paths(ds_path, path)
+        meta = md.Metadata(ds_root=ds_path, path=path)
         record = meta.get(mode=mode)
         return record
 
@@ -936,7 +1024,7 @@ class DataManager:
         ds = Dataset(str(dataset))
 
         # compute repo name
-        root_path, relpath, ds_path, relposix = ensure_paths(ds_path=self.cfg.dm_root, path=dataset)
+        root_path, relpath, ds_path, relposix = helpers.ensure_paths(ds_path=self.cfg.dm_root, path=dataset)
         if repo_name is None:
             repo_name = self.cfg.GIN_repo
         if str(relposix) != '.':
@@ -965,7 +1053,7 @@ class DataManager:
             if entry.get('action') != 'configure-sibling':
                 continue
             try:
-                _root_path, _relpath, entry_ds_path, _relposix = ensure_paths(
+                _root_path, _relpath, entry_ds_path, _relposix = helpers.ensure_paths(
                     ds_path=self.cfg.dm_root,
                     path=Path(entry['path'])
                 )
@@ -981,7 +1069,7 @@ class DataManager:
             # take it from the 'configure-sibling' action
             if entry['action'] != 'configure-sibling':
                 continue
-            root_path, relpath, ds_path, relposix = ensure_paths(ds_path=self.cfg.dm_root, path=Path(entry['path']))
+            root_path, relpath, ds_path, relposix = helpers.ensure_paths(ds_path=self.cfg.dm_root, path=Path(entry['path']))
 
             if relposix == '.':
                 # exclude root for parent registration
@@ -993,7 +1081,7 @@ class DataManager:
             if url.startswith('http'):
                 https_url = url[:-4] if url.endswith('.git') else url
             else:
-                https_url = ssh_to_https(url)
+                https_url = helpers.ssh_to_https(url)
 
             dl.subdatasets(
                 dataset=str(parent),
@@ -1023,11 +1111,12 @@ class DataManager:
         Save the current data manager configuration to disk.
         """
         dmc.save_persistent_cfg({
-            "dm_root": self.cfg.dm_root,
+            "dm_root": str(self.cfg.dm_root),
             "user_name": self.cfg.user_name,
             "user_email": self.cfg.user_email,
             "default_project": self.cfg.default_project,
             "default_campaign": self.cfg.default_campaign,
+            "default_experiment": self.cfg.default_experiment,
             "GIN_url": self.cfg.GIN_url,
             "GIN_repo": self.cfg.GIN_repo,
             "GIN_user": self.cfg.GIN_user,
@@ -1037,6 +1126,7 @@ class DataManager:
                   ds_path: str | Path, *,
                   path: str | Path | None = None,
                   name: Optional[str] = None,
+                  dataset_type: str = 'below-experiment',
                   extra: Optional[Dict[str, Any]] = None,
                   do_not_save = False) -> None:
         """
@@ -1045,16 +1135,20 @@ class DataManager:
         :param path: (str, Path) Relative path to the file or folder whose meta-data should be attached serving as and
                      identifier
         :param name: (str) human-readable name for the file or folder whose meta-data will be saved.
+        :param dataset_type: (str) Designates the type of dataset. Options: 'root', 'project', 'campaign', 'experiment',
+                                   or 'below experiment'. Content 'below experiment' is not a dataset, but files and
+                                   folders that belong to an experiment dataset
         :param extra: (Dict[str, Any]) optional extra metadata to be attached beyond default fields
         :param do_not_save: (bool) whether to save recursively or not
         :return: None
         """
 
-        meta = md.Metadata(ds_root=ds_path, path=path, dm_root=self.cfg.dm_root)
+        meta = md.Metadata(ds_root=ds_path, path=path)
         meta.add(
             payload=extra,
             mode='overwrite',
             name=name,
+            dataset_type=dataset_type,
             user_email=self.cfg.user_email,
             user_name=self.cfg.user_name,
             extractor_name=self.cfg.extractor_name,
@@ -1065,8 +1159,8 @@ class DataManager:
 
         # Commit metadata
         if not do_not_save:
-            dl.save(
-                dataset=str(ds_path),
+            self.save(
+                path=str(ds_path),
                 message=f"Metadata for {targetstr}",
                 recursive=False
             )
