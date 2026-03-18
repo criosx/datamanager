@@ -21,10 +21,14 @@ from roadmap_datamanager import metadata as md
 
 #  Install policy
 ALLOWED_CATEGORIES = [
-    "raw", "reduced", "measurement", "analysis",
+    "autocontrol", "raw", "reduced", "measurement", "analysis",
     "template", "experimental_optimization", "model",
 ]
 
+#
+GITIGNORE = """
+autocontrol/
+"""
 
 # -------------- already cleanly separated Datalad-using functions to make datamanager independent ------
 
@@ -228,6 +232,9 @@ class DataManager:
                     message=f"Register existing subdataset {path} with parent dataset {str(superds)}."
                 )
             return
+
+        if not (path / ".gitignore").is_file():
+            (path / ".gitignore").write_text(GITIGNORE.strip() + "\n", encoding="utf-8")
 
         # Create (and register if superds is provided)
         if superds is None:
