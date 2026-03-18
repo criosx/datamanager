@@ -233,7 +233,7 @@ class DataManager:
                 )
             return
 
-        if name == 'experiment' and not (path / ".gitignore").is_file():
+        if dataset_type == 'experiment' and not (path / ".gitignore").is_file():
             (path / ".gitignore").write_text(GITIGNORE.strip() + "\n", encoding="utf-8")
 
         # Create (and register if superds is provided)
