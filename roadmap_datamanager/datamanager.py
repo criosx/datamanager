@@ -102,6 +102,11 @@ def clone_from_remote(dest: str | os.PathLike,
         credential=None,
         private=False
     )
+    _ = ds.siblings(
+        name='origin',
+        recursive=True,
+        action='remove'
+    )
     return
 
 
@@ -171,7 +176,7 @@ def pull_from_remotes(dataset: str | os.PathLike,
     ds.save(recursive=recursive, message='updated from remote')
 
 # for testing - remove later
-# clone_from_remote(dest='/Users/frank/app_data/frank', user='fhein', repo='frank')
+clone_from_remote(dest='/Users/frank/app_data/frank', user='fhein', repo='frank')
 
 class DataManager:
     """
