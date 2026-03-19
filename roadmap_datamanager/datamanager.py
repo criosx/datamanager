@@ -31,11 +31,11 @@ autocontrol/
 """
 
 # -------------- already cleanly separated Datalad-using functions to make datamanager independent ------
-def clone_from_gin(dest: str | os.PathLike,
-                   source_url: str = None,
-                   source_url_root: str = None,
-                   user: str = None,
-                   repo: str = None):
+def clone_from_remote(dest: str | os.PathLike,
+                      source_url: str = None,
+                      source_url_root: str = None,
+                      user: str = None,
+                      repo: str = None):
     """
     Clone a superdataset from GIN into dest; install subdatasets (no data).
     :param dest: (str, os.Pathlike) destination path to clone the GIN dataset into
@@ -782,7 +782,7 @@ class DataManager:
                 if repo is None:
                     raise RuntimeError(f"No repository name provided.")
 
-        clone_from_gin(dest=dest, source_url=source_url, source_url_root=source_url_root, user=user, repo=repo)
+        clone_from_remote(dest=dest, source_url=source_url, source_url_root=source_url_root, user=user, repo=repo)
 
         return
 
