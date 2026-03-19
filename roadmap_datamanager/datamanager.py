@@ -49,9 +49,10 @@ def clone_from_remote(dest: str | os.PathLike,
 
     def _fix_sibling_names_recursive(path):
         ds = Dataset(path)
-        results = []
-        results = ds.siblings(recursive=True, action="query", name='origin', return_type="list", on_failure="ignore")
+        results = ds.siblings(recursive=True, action="query", return_type="list")
         for r in results:
+            if r.get("name", None) != 'origin':
+                continue
             props = r.copy()
             url = props.pop('url', None)
             subds = Dataset(props['path'])
@@ -60,14 +61,9 @@ def clone_from_remote(dest: str | os.PathLike,
                 props.pop(key, None)
             subds.siblings(action='remove', name='origin')
             # check if gin already exists
-            sibs = []
-            sibs = subds.siblings(action='query', name='gin', recursive=False, return_type="list", on_failure="ignore")
-            print('Inquiry')
-            print(subds.path)
-            print(props)
-            print(sibs)
-            if not sibs:
-                print('No gin siblings found. I will try to add one.')
+            sibs = subds.siblings(action='query', recursive=False, return_type="list")
+            names = {r.get('name', None) for r in sibs}
+            if 'gin' not in sibs:
                 subds.siblings(action='add', name='gin', url=url, **props)
 
     dest = Path(dest).expanduser().resolve()
