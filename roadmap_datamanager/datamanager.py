@@ -63,7 +63,7 @@ def clone_from_remote(dest: str | os.PathLike,
             # check if gin already exists
             sibs = subds.siblings(action='query', recursive=False, return_type="list")
             names = {r.get('name', None) for r in sibs}
-            if 'gin' not in sibs:
+            if 'gin' not in names:
                 subds.siblings(action='add', name='gin', url=url, **props)
 
     dest = Path(dest).expanduser().resolve()
