@@ -46,6 +46,26 @@ def clone_from_remote(dest: str | os.PathLike,
     :param repo: (str) repo name of the repository, defaults to None
     :return: the path to the cloned GIN dataset
     """
+
+    def _fix_sibling_names_recursive(path):
+        ds = Dataset(path)
+
+        results = ds.siblings(recursive=True, result_renderer='disabled')
+
+        for r in results:
+            if r.get('name') == 'origin':
+                ds_path = r['path']
+                subds = Dataset(ds_path)
+
+                # check if gin already exists
+                sibs = subds.siblings(result_renderer='disabled')
+                names = {s['name'] for s in sibs}
+
+                if 'gin' in names:
+                    subds.siblings('remove', name='origin')
+                else:
+                    subds.siblings('rename', name='origin', newname='gin')
+
     dest = Path(dest).expanduser().resolve()
     dest.mkdir(parents=True, exist_ok=True)
     if any(dest.iterdir()):
@@ -64,8 +84,24 @@ def clone_from_remote(dest: str | os.PathLike,
         source_url = source_url_root + user + '/' + repo + '.git'
 
     dl.clone(source=source_url, path=str(dest))
-    pull_from_remotes(dataset=str(dest), recursive=True)  # installs subdatasets
+    # installs subdatasets
+    pull_from_remotes(dataset=str(dest), recursive=True)
+    # fixes sibling names
+    _fix_sibling_names_recursive(str(dest))
     return
+
+def get_dataset_id(dataset: str | Path) -> str | None:
+    """
+    Retrieve the dataset id
+    :param dataset: (str or Path) the dataset path
+    :return: (str) dataset id or None
+    """
+    dataset = Path(dataset).expanduser().resolve()
+    ds = Dataset(str(dataset))
+    if ds.is_installed():
+        return ds.id
+    else:
+        return None
 
 def get_dataset_nodetype(ds_path: str | Path):
     """
@@ -390,20 +426,6 @@ class DataManager:
                 _ = self._run_git(["annex", "drop", "--all"], cwd=Path(sibling["path"]))
         else:
             _ = self._run_git(["annex", "drop", str(path.name)], cwd=Path(str(dataset)))
-
-    @staticmethod
-    def get_dataset_id(dataset: str | Path) -> str | None:
-        """
-        Retrieve the dataset id
-        :param dataset: (str or Path) the dataset path
-        :return: (str) dataset id or None
-        """
-        dataset = Path(dataset).expanduser().resolve()
-        ds = Dataset(str(dataset))
-        if ds.is_installed():
-            return ds.id
-        else:
-            return None
 
     def get_content(self, dataset: str | os.PathLike, path: str | os.PathLike | list[str | os.PathLike] | None = None,
                     recursive: bool = False) -> None:
