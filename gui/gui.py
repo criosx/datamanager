@@ -505,7 +505,7 @@ class MainWindow(QMainWindow):
         :return: no return value
         """
         self._run_in_worker(
-            self.dm.clone_from_gin,
+            self.dm.clone_from_remote,
             dest=self.dm_current_path
         )
 

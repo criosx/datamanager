@@ -313,7 +313,7 @@ class DataManagerPublishGINSiblingTest(unittest.TestCase):
         """
         other_dir = Path(tempfile.mkdtemp()) / "clone"
         other_dir.mkdir(parents=True, exist_ok=True)
-        self.dm.clone_from_gin(source_url=gin_url, dest=str(other_dir))
+        self.dm.clone_from_remote(source_url=gin_url, dest=str(other_dir))
         # self.dl.get(dataset=str(other_dir), path=str(other_dir), recursive=True, get_data=False)
         return other_dir
 
@@ -403,7 +403,7 @@ class DataManagerPublishGINSiblingTest(unittest.TestCase):
 
         # Verify by cloning fresh and checking both commits and annex content
         dm2, other = create_tmp_dm_instance()
-        dm2.clone_from_gin(dest=other, source_url=gin_url)
+        dm2.clone_from_remote(dest=other, source_url=gin_url)
         self.assertTrue((other / "CHANGES.md").exists(), "Root commit did not reach GIN")
         # Annex file exists as pointer initially; fetch bytes:
         dm2.get_content(dataset=str(other / "p" / "c" / "e" / "analysis"),
@@ -414,7 +414,7 @@ class DataManagerPublishGINSiblingTest(unittest.TestCase):
         gin_url = self._ensure_published()
         # Second working copy simulates another computer
         dm_other, other = create_tmp_dm_instance()
-        dm_other.clone_from_gin(dest=other, source_url=gin_url)
+        dm_other.clone_from_remote(dest=other, source_url=gin_url)
 
         # Change on original and push
         (self.root / "NOTE.txt").write_text("note v1\n")
@@ -436,7 +436,7 @@ class DataManagerPublishGINSiblingTest(unittest.TestCase):
     def test_04_get_data(self):
         gin_url = self._ensure_published()
         dm_other, other = create_tmp_dm_instance()
-        dm_other.clone_from_gin(dest=other, source_url=gin_url)
+        dm_other.clone_from_remote(dest=other, source_url=gin_url)
 
         sub_other = other / "p" / "c" / "e" / "analysis"
         target = sub_other / "note.bin"
@@ -453,7 +453,7 @@ class DataManagerPublishGINSiblingTest(unittest.TestCase):
     def test_05_drop_local(self):
         gin_url = self._ensure_published()
         dm_other, other = create_tmp_dm_instance()
-        dm_other.clone_from_gin(dest=other, source_url=gin_url)
+        dm_other.clone_from_remote(dest=other, source_url=gin_url)
 
         sub_other = other / "p" / "c" / "e" / "analysis"
         target = sub_other / "note.bin"

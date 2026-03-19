@@ -31,7 +31,41 @@ autocontrol/
 """
 
 # -------------- already cleanly separated Datalad-using functions to make datamanager independent ------
+def clone_from_gin(dest: str | os.PathLike,
+                   source_url: str = None,
+                   source_url_root: str = None,
+                   user: str = None,
+                   repo: str = None):
+    """
+    Clone a superdataset from GIN into dest; install subdatasets (no data).
+    :param dest: (str, os.Pathlike) destination path to clone the GIN dataset into
+    :param source_url: (str, optional) source GIN repo URL. If not provided, source_url_root, user, and repo need to
+                       be provided separately
+    :param source_url_root: (str) URL root of the GIN dataset to clone, defaults to None
+    :param user: (str) GIN unser name for the repository, defaults to None
+    :param repo: (str) repo name of the repository, defaults to None
+    :return: the path to the cloned GIN dataset
+    """
+    dest = Path(dest).expanduser().resolve()
+    dest.mkdir(parents=True, exist_ok=True)
+    if any(dest.iterdir()):
+        raise RuntimeError(f"Destination path {dest} must be empty.")
 
+    if source_url is None:
+        if source_url_root is None:
+            source_url_root = f"git@gin.g-node.org:/"
+
+        if user is None:
+                raise RuntimeError(f"No username provided.")
+
+        if repo is None:
+                raise RuntimeError(f"No repository name provided.")
+
+        source_url = source_url_root + user + '/' + repo + '.git'
+
+    dl.clone(source=source_url, path=str(dest))
+    pull_from_remotes(dataset=str(dest), recursive=True)  # installs subdatasets
+    return
 
 def get_dataset_nodetype(ds_path: str | Path):
     """
@@ -66,6 +100,24 @@ def get_dataset_nodetype(ds_path: str | Path):
     if node_type == 'experiment' and stepup_counter == 0:
         node_type = 'below-experiment'
     return node_type, ds_path
+
+
+def pull_from_remotes(dataset: str | os.PathLike,
+                      recursive: bool = True,
+                      sibling_name: str = None) -> None:
+    """
+    Pull latest history from GIN and merge.
+    :param dataset: (str) path to the dataset to update from remotes
+    :param recursive: whether recursively pull from remotes, default True
+    :param sibling_name: (str) name of the sibling datasets to pull from (such as 'gin' for GIN publishing),
+                         default: None (recommended), which self-determines the target to pull from
+    :return: no return value
+    """
+    ds = Dataset(str(dataset))
+    # ds.save(recursive=recursive, message='save before update from remote')
+    ds.update(recursive=recursive, how='merge', sibling=sibling_name)
+    ds.get(recursive=recursive, get_data=False)
+    ds.save(recursive=recursive, message='updated from remote')
 
 
 class DataManager:
@@ -289,43 +341,6 @@ class DataManager:
         )
 
     # ----------------- start datalad api, later to be separated from datamanager -----------------
-
-    def clone_from_gin(self, dest: str | os.PathLike, source_url: str = None, source_url_root: str = None,
-                       user: str = None, repo: str = None):
-        """
-        Clone a superdataset from GIN into dest; install subdatasets (no data).
-        :param dest: (str, os.Pathlike) destination path to clone the GIN dataset into
-        :param source_url: (str, optional) source GIN repo URL. If not provided, source_url_root, user, and repo need to
-                           be provided separately
-        :param source_url_root: (str) URL root of the GIN dataset to clone, defaults to None
-        :param user: (str) GIN unser name for the repository, defaults to None
-        :param repo: (str) repo name of the repository, defaults to None
-        :return: the path to the cloned GIN dataset
-        """
-        dest = Path(dest).expanduser().resolve()
-        dest.mkdir(parents=True, exist_ok=True)
-        if any(dest.iterdir()):
-            raise RuntimeError(f"Destination path {dest} must be empty.")
-
-        if source_url is None:
-            if source_url_root is None:
-                source_url_root = f"git@gin.g-node.org:/"
-
-            if user is None:
-                user = getattr(self.cfg, "GIN_user", None)
-                if user is None:
-                    raise RuntimeError(f"No username provided.")
-
-            if repo is None:
-                repo = getattr(self.cfg, "GIN_repo", None)
-                if repo is None:
-                    raise RuntimeError(f"No repository name provided.")
-
-            source_url = source_url_root + user + '/' + repo + '.git'
-
-        dl.clone(source=source_url, path=str(dest))
-        self.pull_from_remotes(dataset=str(dest), recursive=True)             # installs subdatasets
-        return
 
     @staticmethod
     def create(dataset, path=None):
@@ -650,23 +665,6 @@ class DataManager:
         else:
             return False, None
 
-
-    @staticmethod
-    def pull_from_remotes(dataset: str | os.PathLike, recursive: bool = True, sibling_name: str = None) -> None:
-        """
-        Pull latest history from GIN and merge.
-        :param dataset: (str) path to the dataset to update from remotes
-        :param recursive: whether recursively pull from remotes, default True
-        :param sibling_name: (str) name of the sibling datasets to pull from (such as 'gin' for GIN publishing),
-                             default: None (recommended), which self-determines the target to pull from
-        :return: no return value
-        """
-        ds = Dataset(str(dataset))
-        # ds.save(recursive=recursive, message='save before update from remote')
-        ds.update(recursive=recursive, how='merge', sibling=sibling_name)
-        ds.get(recursive=recursive, get_data=False)
-        ds.save(recursive=recursive, message='updated from remote')
-
     def push_to_remotes(self, dataset: str | os.PathLike, recursive: bool = True, message: str | None = None,
                         sibling_name: str = None, push_annex_data: bool = True) -> None:
         """
@@ -757,6 +755,36 @@ class DataManager:
         return sibs if sibs else []
 
     # ----------------- end datalad api, later to be separated from datamanager -----------------
+    def clone_from_remote(self,
+                          dest: str | os.PathLike,
+                          source_url: str = None,
+                          source_url_root: str = None,
+                          user: str = None,
+                          repo: str = None):
+        """
+        Clone a superdataset from GIN into dest; install subdatasets (no data).
+        :param dest: (str, os.Pathlike) destination path to clone the GIN dataset into
+        :param source_url: (str, optional) source GIN repo URL. If not provided, source_url_root, user, and repo need to
+                           be provided separately
+        :param source_url_root: (str) URL root of the GIN dataset to clone, defaults to None
+        :param user: (str) GIN unser name for the repository, defaults to None
+        :param repo: (str) repo name of the repository, defaults to None
+        :return: the path to the cloned GIN dataset
+        """
+
+        if source_url is None:
+            if user is None:
+                user = getattr(self.cfg, "GIN_user", None)
+                if user is None:
+                    raise RuntimeError(f"No username provided.")
+            if repo is None:
+                repo = getattr(self.cfg, "GIN_repo", None)
+                if repo is None:
+                    raise RuntimeError(f"No repository name provided.")
+
+        clone_from_gin(dest=dest, source_url=source_url, source_url_root=source_url_root, user=user, repo=repo)
+
+        return
 
     def get_status(self, *,
                    dataset: str | os.PathLike = None,
