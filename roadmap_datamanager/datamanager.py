@@ -64,7 +64,11 @@ def clone_from_remote(dest: str | os.PathLike,
             sibs = subds.siblings(action='query', recursive=False, return_type="list")
             names = {r.get('name', None) for r in sibs}
             if 'gin' not in names:
-                subds.siblings(action='add', name='gin', url=url, **props)
+                subds.create_sibling_gin(name='gin',
+                                         reponame=repo,
+                                         existing='reconfigure',
+                                         access_protocol='ssh')
+                # subds.siblings(action='add', name='gin', url=url, **props)
 
     dest = Path(dest).expanduser().resolve()
     dest.mkdir(parents=True, exist_ok=True)
@@ -89,6 +93,7 @@ def clone_from_remote(dest: str | os.PathLike,
     # fixes sibling names
     _fix_sibling_names_recursive(str(dest))
     return
+
 
 def get_dataset_id(dataset: str | Path) -> str | None:
     """
@@ -155,6 +160,8 @@ def pull_from_remotes(dataset: str | os.PathLike,
     ds.get(recursive=recursive, get_data=False)
     ds.save(recursive=recursive, message='updated from remote')
 
+# for testing - remove later
+# clone_from_remote(dest='/Users/frank/app_data/frank', user='fhein', repo='frank')
 
 class DataManager:
     """
