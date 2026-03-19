@@ -92,6 +92,16 @@ def clone_from_remote(dest: str | os.PathLike,
     pull_from_remotes(dataset=str(dest), recursive=True)
     # fixes sibling names
     # _fix_sibling_names_recursive(str(dest))
+    ds = Dataset(str(dest))
+    _ = ds.create_sibling_gin(
+        repo,
+        name='gin',
+        recursive=True,
+        existing='reconfigure',
+        access_protocol='ssh',
+        credential=None,
+        private=False
+    )
     return
 
 
