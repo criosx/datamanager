@@ -49,22 +49,19 @@ def clone_from_remote(dest: str | os.PathLike,
 
     def _fix_sibling_names_recursive(path):
         ds = Dataset(path)
-
-        results = ds.siblings(recursive=True, result_renderer='disabled')
-
+        results = ds.siblings(recursive=True, action="query", name='origin', return_type="list")
         for r in results:
-            if r.get('name') == 'origin':
-                ds_path = r['path']
-                subds = Dataset(ds_path)
-
-                # check if gin already exists
-                sibs = subds.siblings(result_renderer='disabled')
-                names = {s['name'] for s in sibs}
-
-                if 'gin' in names:
-                    subds.siblings('remove', name='origin')
-                else:
-                    subds.siblings('rename', name='origin', newname='gin')
+            props = r.copy()
+            url = props.pop('url', None)
+            subds = Dataset(props['path'])
+            to_remove = ['name', 'action', 'status', 'path', 'type', 'refds', 'annex-uuid']
+            for key in to_remove:
+                props.pop(key, None)
+            subds.siblings(action='remove', name='origin')
+            # check if gin already exists
+            sibs = subds.siblings(action='query', name='gin', recursive=False, return_type="list")
+            if not sibs:
+                subds.siblings(action='add', name='gin', url=url, **props)
 
     dest = Path(dest).expanduser().resolve()
     dest.mkdir(parents=True, exist_ok=True)
