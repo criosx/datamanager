@@ -91,7 +91,7 @@ def clone_from_remote(dest: str | os.PathLike,
     # installs subdatasets
     pull_from_remotes(dataset=str(dest), recursive=True)
     # fixes sibling names
-    _fix_sibling_names_recursive(str(dest))
+    # _fix_sibling_names_recursive(str(dest))
     return
 
 
