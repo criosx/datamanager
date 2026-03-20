@@ -6,6 +6,8 @@ import shlex
 import streamlit as st
 import subprocess
 
+from roadmap_datamanager import datalad_gin_api as dgapi
+
 from pathlib import Path
 
 def file_browser_button(path: Path, label="↗️"):
@@ -247,3 +249,78 @@ def UI_fragment_SSH_connection(cfg):
                 st.stop()
 
     return cfg
+
+def UI_fragment_user(cfg, user_root_dir):
+    st.write("""
+        ## User
+                 """)
+    user_list = []
+    default_user = None
+    root = user_root_dir
+    if root.is_dir():
+        user_list = [p.name for p in root.iterdir() if p.is_dir() and not p.name.startswith(".")]
+        user_list.sort()
+    if cfg.user_name is not None:
+        if cfg.user_name not in user_list:
+            user_list.append(cfg.user_name)
+            user_list.sort()
+        default_user = user_list.index(cfg.user_name)
+    user = st.selectbox(
+        "User Name",
+        options=user_list,
+        index=default_user,
+        placeholder='Create or select a user.',
+        accept_new_options=True)
+    if user and user != cfg.user_name:
+        cfg.user_name = user
+        cfg.project = None
+        cfg.campaign = None
+        cfg.experiment = None
+
+    if cfg.user_name is None:
+        return cfg, None
+
+    dataroot_dir = user_root_dir / cfg.user_name
+
+    col1, col2, col3 = st.columns([6, 1, 3])
+    info_text = "Data root directory " + str(dataroot_dir)
+    if dataroot_dir.is_dir():
+        info_text += " exists."
+        with col1:
+            st.text(info_text)
+        with col2:
+            file_browser_button(dataroot_dir)
+    else:
+        info_text += (" has not been created, yet. If you intend to use GIN remote storage, make sure that the SSH "
+                      "connection is working properly. The script will attempt to clone an existing repository for "
+                      "this user when creating a data root.")
+
+        with col1:
+            st.text(info_text)
+        with col3:
+            if st.button("Create Data Root Directory", type='primary'):
+                dataroot_dir.mkdir(parents=True, exist_ok=True)
+                # check SSH connection
+                ssh_host_alias = cfg.SSH_host_alias
+                ok = False
+                if ssh_host_alias is not None:
+                    ok, summary, details = ssh_test_connection(ssh_host_alias)
+                if not ok:
+                    st.warning("SSH connection failed.")
+                else:
+                    try:
+                        source_url = 'https://' + cfg.GIN_url + '/' + cfg.GIN_user + '/' + cfg.user_name
+                        dgapi.clone_from_remote(
+                            dest=dataroot_dir,
+                            user_name=cfg.GIN_user,
+                            repo_name=cfg.user_name
+                        )
+                    except Exception as e:
+                        st.info("No remote repository found.")
+                        st.text(f"Detailed response: {e}")
+                st.rerun()
+
+        st.write("""## Remote Connection Setup""")
+        cfg = UI_fragment_SSH_connection(cfg)
+
+    return cfg, dataroot_dir
