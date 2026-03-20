@@ -229,10 +229,10 @@ def UI_fragment_SSH_connection(cfg):
                 st.error(message)
         st.stop()
 
-    col11, col12, col13 = st.columns([3, 4, 3])
-    with col11:
+    colUIfSc1, colUIfSc2, colUIfSc3 = st.columns([3, 4, 3])
+    with colUIfSc1:
         file_browser_button(public_key_path.parent, label="Show SSH Directory ↗️")
-    with col12:
+    with colUIfSc2:
         if st.button("Test SSH Connection", type='primary'):
             ok, summary, details = ssh_test_connection(ssh_host_alias)
             if ok:
