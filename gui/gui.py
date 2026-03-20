@@ -439,7 +439,7 @@ class MainWindow(QMainWindow):
 
         paths2 = []
         for p in paths:
-            ds_root, rel = dgapi.find_dataset_root_and_rel(p, self.dm.cfg.dm_root)
+            ds_root, rel = dgapi.find_dataset_root_and_rel(p)
             if ds_root is None or rel is None:
                 continue
             rel_str = "." if rel == Path("../roadmap_datamanager") else rel.as_posix()
@@ -747,7 +747,7 @@ class MainWindow(QMainWindow):
         item = self.dm_list.currentItem()
         target_path = Path(item.data(Qt.ItemDataRole.UserRole)) if item else self.dm_current_path
 
-        ds_root, rel = dgapi.find_dataset_root_and_rel(target_path, self.dm.cfg.dm_root)
+        ds_root, rel = dgapi.find_dataset_root_and_rel(target_path)
         if ds_root is None:
             self.meta_title.setText("Metadata: —")
             self.metadata_update_viewer("No enclosing dataset found for this selection.")

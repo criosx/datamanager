@@ -332,14 +332,14 @@ class DataManagerPublishGINSiblingTest(unittest.TestCase):
         # Add a subdataset under the experiment
         sub = cls.root / "p" / "c" / "e" / "analysis"
         dgapi.create_dataset(path=str(sub), dataset=str(cls.root / "p" / "c" / "e"))
-        cls.dm.save_dataset(path=str(cls.root), recursive=True, message="add analysis subdataset")
+        dgapi.save_dataset(path=str(cls.root), recursive=True, message="add analysis subdataset")
 
         # Make sure there is at least one commit to push everywhere
         (cls.root / "README.md").write_text("root readme\n")
-        cls.dm.save_dataset(path=str(cls.root / "README.md"), message="seed root")
+        dgapi.save_dataset(path=str(cls.root / "README.md"), message="seed root")
 
         (sub / "note.bin").write_bytes(b"\x00\x01")
-        cls.dm.save_dataset(path=str(sub / "note.bin"), message="seed subdataset")
+        dgapi.save_dataset(path=str(sub / "note.bin"), message="seed subdataset")
 
         cls.repo_name = f"scidata-{uuid.uuid4().hex}"
 
@@ -378,7 +378,7 @@ class DataManagerPublishGINSiblingTest(unittest.TestCase):
         # Try a lightweight publish to ensure remote usability (Git + annex content)
         #    (publish_gin_sibling already pushed, but we do a small follow-up change to verify)
         (self.root / "TOUCH.txt").write_text("tick\n")
-        self.dm.save_dataset(path=str(self.root / "TOUCH.txt"), recursive=False, message="touch")
+        dgapi.save_dataset(path=str(self.root / "TOUCH.txt"), recursive=False, message="touch")
         dgapi.push_to_remotes(dataset=str(self.root), sibling_name="gin", recursive=False)
 
         # Optional integrity check: drop local content for annexed file and get it back from GIN
@@ -395,7 +395,7 @@ class DataManagerPublishGINSiblingTest(unittest.TestCase):
         (self.root / "CHANGES.md").write_text("root change\n")
         sub = self.root / "p" / "c" / "e" / "analysis"
         (sub / "new.bin").write_bytes(b"\xAA\xBB\xCC")
-        self.dm.save_dataset(path=str(self.root), recursive=True, message="prepare push_to_remotes test")
+        dgapi.save_dataset(path=str(self.root), recursive=True, message="prepare push_to_remotes test")
 
         # Use DataManager API
         dgapi.push_to_remotes(dataset=str(self.root), recursive=True, message="dm push_to_remotes")
@@ -417,7 +417,7 @@ class DataManagerPublishGINSiblingTest(unittest.TestCase):
 
         # Change on original and push
         (self.root / "NOTE.txt").write_text("note v1\n")
-        self.dm.save_dataset(path=str(self.root / "NOTE.txt"), message="v1")
+        dgapi.save_dataset(path=str(self.root / "NOTE.txt"), message="v1")
         dgapi.push_to_remotes(dataset=str(self.root), recursive=True, message="push v1")
 
         # Pull into the other clone
@@ -426,7 +426,7 @@ class DataManagerPublishGINSiblingTest(unittest.TestCase):
 
         # Update again and verify second pull
         (self.root / "NOTE.txt").write_text("note v2\n")
-        self.dm.save_dataset(path=str(self.root / "NOTE.txt"), message="v2")
+        dgapi.save_dataset(path=str(self.root / "NOTE.txt"), message="v2")
         dgapi.push_to_remotes(dataset=str(self.root), recursive=True, message="push v2")
 
         dgapi.pull_from_remotes(dataset=str(other), recursive=True)

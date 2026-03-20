@@ -180,39 +180,32 @@ def ensure_paths(ds_path, path):
     return ds_path, rel_path, absolute_path, relposix
 
 
-def find_dataset_root_and_rel(path: str | Path,
-                              dm_root: str | Path) -> tuple[Path | None, Path | None]:
+def find_dataset_root_and_rel(path: str | Path) -> tuple[Path | None, Path | None]:
     """
     Walk up from `path` until we find a directory containing a dataset.
     Returns (ds_root, relpath_within_dataset) or (None, None) if not found.
     If `path` is the dataset root, relpath is Path('.').
+
     :param path: (Path or str) item path to start walking up from
-    :param dm_root: (Path or str) datamanager root directory
     """
     path = Path(path).resolve()
-    dm_root = Path(dm_root).resolve()
+    ds_root = None
+    rel = None
+    if path.exists() or path.is_symlink():
+        # if it's a file/symlink, start from parent when searching dataset root
+        p = path if path.is_dir() else path.parent
 
-    if not (path.exists() or path.is_symlink()):
-        return None, None
-
-    # if it's a file/symlink, start from parent when searching dataset root
-    search_from = path if path.is_dir() else path.parent
-
-    # climb up until DM root
-    dm_root = Path(dm_root)
-    p = search_from
-    while True:
-        if p.is_dir() and (p / ".datalad").exists() or (p / ".git").exists():
-            ds_root = p
-            # rel path is relative to ds_root; for the dataset itself, use '.'
-            rel = path.relative_to(ds_root)
-            return ds_root, rel
-        if dm_root and (p == dm_root or p == dm_root.parent):
-            break
-        if p.parent == p:
-            break
-        p = p.parent
-    return None, None
+        while True:
+            ds = Dataset(p)
+            if ds.is_installed():
+                ds_root = p
+                # rel path is relative to ds_root; for the dataset itself, use '.'
+                rel = path.relative_to(ds_root)
+                break
+            if p.parent == p:
+                break
+            p = p.parent
+    return ds_root, rel
 
 
 def get_content(dataset: str | os.PathLike, path: str | os.PathLike | list[str | os.PathLike] | None = None,
@@ -607,6 +600,45 @@ def remove_siblings(dataset: str | os.PathLike, sibling_name: str = 'gin', recur
         raise RuntimeError("No remote target configured and no 'gin'/'origin' sibling found.")
 
     dl.siblings(action='remove', dataset=ds_path, name=sibling_name, recursive=recursive)
+
+def save_branch(ds_path: str | Path) -> None:
+    """
+    Saves an entire datalad branch, walking from the given dataset path up to root.
+    :param ds_path: (str | Path) dataset path
+    :return: No return value
+    """
+    ds_path = Path(ds_path).expanduser().resolve()
+    save_dataset(path=ds_path, recursive=True)
+    while True:
+        path = ds_path.parent
+        ds = Dataset(str(path))
+        if ds.is_installed():
+            save_dataset(path=path, recursive=False)
+        else:
+            break
+
+
+def save_dataset(path: str | os.PathLike,
+                 recursive: bool = True,
+                 message: str = None) -> None:
+    """
+    Saves the current dataset to disk. Path can point to nested item in the dataset. The function will walk up
+    the file tree until it finds a dataset.
+
+    :param path: (str or Path) path to the dataset or content in dataset
+    :param recursive: (bool) step recursively into subdatasets
+    :param message: (str) optional commit message
+    :return: no return value
+    """
+    path = Path(path).resolve().absolute()
+    ds_root, rel = find_dataset_root_and_rel(path)
+
+    if str(rel) == '.':
+        # save dataset
+        dl.save(dataset=str(ds_root), recursive=recursive, message=message)
+    else:
+        # just save content, if path is not that of a subdataset
+        dl.save(dataset=str(ds_root), path=str(path), recursive=False, message=message)
 
 
 def siblings(dataset, *, recursive=False, action='query'):

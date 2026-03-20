@@ -27,8 +27,6 @@ GITIGNORE = """
 autocontrol/
 """
 
-# -------------- already cleanly separated Datalad-using functions to make datamanager independent ------
-
 
 class DataManager:
     """
@@ -212,30 +210,7 @@ class DataManager:
         # dl.save_dataset(dataset=str(path), recursive=recursive_save, message=f"Initialized dataset.")
         self.save_meta(path, name=name, dataset_type=dataset_type, do_not_save=do_not_save)
 
-    # ----------------- start datalad api, later to be separated from datamanager -----------------
 
-    def save_dataset(self,
-                     path: str | os.PathLike,
-                     recursive: bool = True,
-                     message: str = None) -> None:
-        """
-        Saves the current dataset to disk
-        :param path: (str or Path) path to the dataset or content in dataset
-        :param recursive: (bool) step recursively into subdatasets
-        :param message: (str) optional commit message
-        :return: no return value
-        """
-        path = Path(path).resolve().absolute()
-        ds_root, rel = dgapi.find_dataset_root_and_rel(path, dm_root=self.cfg.dm_root)
-
-        if str(rel) == '.':
-            # save dataset
-            dl.save(dataset=str(ds_root), recursive=recursive, message=message)
-        else:
-            # just save content, if path is not that of a subdataset
-            dl.save(dataset=str(ds_root), path=str(path), recursive=False, message=message)
-
-    # ----------------- end datalad api, later to be separated from datamanager -----------------
     def clone_from_remote(self,
                           dest: str | os.PathLike,
                           source_url: str = None,
@@ -326,7 +301,7 @@ class DataManager:
                                  do_not_save=force)
 
         if force:
-            self.save_dataset(path=up, recursive=True)
+            save_dataset(path=up, recursive=True)
 
         if self.cfg.verbose:
             print(f"Initialized/verified tree at {up} for "
@@ -683,7 +658,7 @@ class DataManager:
 
         # Commit metadata
         if not do_not_save:
-            self.save_dataset(
+            dgapi.save_dataset(
                 path=str(ds_path),
                 message=f"Metadata for {targetstr}",
                 recursive=False
