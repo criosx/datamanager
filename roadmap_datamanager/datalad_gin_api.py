@@ -38,8 +38,8 @@ def _run_git(args: list[str], *, cwd: Path) -> subprocess.CompletedProcess:
 def clone_from_remote(dest: str | os.PathLike,
                       source_url: str = None,
                       source_url_root: str = None,
-                      user: str = None,
-                      repo: str = None):
+                      user_name: str = None,
+                      repo_name: str = None):
     """
     Clone a superdataset from GIN into dest, install subdatasets (no data),
     normalize all GIN remotes to the sibling name 'gin', and remove 'origin'.
@@ -50,8 +50,8 @@ def clone_from_remote(dest: str | os.PathLike,
     :param source_url: (str, optional) source GIN repo URL. If not provided, source_url_root, user, and repo need to
                        be provided separately
     :param source_url_root: (str) URL root of the GIN dataset to clone, defaults to None
-    :param user: (str) GIN unser name for the repository, defaults to None
-    :param repo: (str) repo name of the repository, defaults to None
+    :param user_name: (str) GIN unser name for the repository, defaults to None
+    :param repo_name: (str) repo name of the repository, defaults to None
     :return: no return value
     """
 
@@ -64,13 +64,13 @@ def clone_from_remote(dest: str | os.PathLike,
         if source_url_root is None:
             source_url_root = f"git@gin.g-node.org:"
 
-        if user is None:
+        if user_name is None:
                 raise RuntimeError(f"No username provided.")
 
-        if repo is None:
+        if repo_name is None:
                 raise RuntimeError(f"No repository name provided.")
 
-        source_url = f"{source_url_root}/{user}/{repo}.git"
+        source_url = f"{source_url_root}/{user_name}/{repo_name}.git"
 
     dl.clone(source=source_url, path=str(dest))
 
@@ -80,7 +80,7 @@ def clone_from_remote(dest: str | os.PathLike,
     # Normalize sibling naming: create_dataset/reconfigure 'gin', then remove 'origin'.
     ds = Dataset(str(dest))
     _ = ds.create_sibling_gin(
-        reponame=repo,
+        reponame=repo_name,
         name='gin',
         recursive=True,
         existing='reconfigure',

@@ -267,7 +267,7 @@ class DataManager:
                 if repo_name is None:
                     raise RuntimeError(f"No repository name provided.")
 
-        dgapi.clone_from_remote(dest=dest, source_url=source_url, source_url_root=source_url_root, user=user, repo=repo_name)
+        dgapi.clone_from_remote(dest=dest, source_url=source_url, source_url_root=source_url_root, user_name=user, repo_name=repo_name)
 
         return
 
