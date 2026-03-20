@@ -522,10 +522,6 @@ class DataManager:
         root_path, relpath, ds_path, relposix = dgapi.ensure_paths(ds_path=self.cfg.dm_root, path=dataset)
         if repo_name is None:
             repo_name = self.cfg.GIN_repo
-        else:
-            # make sure to save repo name
-            self.cfg.GIN_repo = repo_name
-            dmc.save_persistent_cfg(self.cfg)
         if str(relposix) != '.':
             repo_name = repo_name + '-' + '-'.join(relpath.parts)
             ds_parent_path = ds_path.parent

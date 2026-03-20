@@ -612,6 +612,7 @@ def save_branch(path: str | Path) -> None:
     path = Path(path).expanduser().resolve()
     ds_root = save_dataset(path=path, recursive=True)
     while True:
+        print('one more time ...')
         up = ds_root.parent
         ds = Dataset(str(up))
         if ds.is_installed():
