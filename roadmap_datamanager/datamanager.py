@@ -301,7 +301,7 @@ class DataManager:
                                  do_not_save=force)
 
         if force:
-            save_dataset(path=up, recursive=True)
+            dgapi.save_dataset(path=up, recursive=True)
 
         if self.cfg.verbose:
             print(f"Initialized/verified tree at {up} for "

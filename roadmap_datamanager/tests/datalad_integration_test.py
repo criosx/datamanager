@@ -62,7 +62,7 @@ def create_tmp_dm_instance():
     )
     return dm, root
 
-def has_meta(ds: Path, *, dm: DataManager, dm_root: Path, rel_path: Path, node_type: str) -> bool:
+def has_meta(ds: Path, *, rel_path: Path, node_type: str) -> bool:
     dataset_id = dgapi.get_dataset_id(ds)
 
     # POSIX-normalized relative path string, '' for dataset itself
@@ -131,10 +131,10 @@ class DataManagerInitTreeTest(unittest.TestCase):
         self.assertTrue((ep / ".datalad").exists())
 
         # meta present at each level
-        self.assertTrue(has_meta(up, dm=dm, dm_root=up, rel_path=Path(), node_type='root'))
-        self.assertTrue(has_meta(pp, dm=dm, dm_root=up, rel_path=Path(), node_type='project'))
-        self.assertTrue(has_meta(cp, dm=dm, dm_root=up, rel_path=Path(), node_type='campaign'))
-        self.assertTrue(has_meta(ep, dm=dm, dm_root=up, rel_path=Path(), node_type='experiment'))
+        self.assertTrue(has_meta(up, rel_path=Path(), node_type='root'))
+        self.assertTrue(has_meta(pp, rel_path=Path(), node_type='project'))
+        self.assertTrue(has_meta(cp, rel_path=Path(), node_type='campaign'))
+        self.assertTrue(has_meta(ep, rel_path=Path(), node_type='experiment'))
 
 
 @unittest.skipUnless(ENV_READY, "Environment check failed; see TestEnvironment.test_000_requirements_present")
@@ -169,7 +169,7 @@ class DataManagerInstallIntoTreeTest(unittest.TestCase):
 
         # Metadata written at experiment level, including filename in the name field
         dest = cat / src.name
-        self.assertTrue(has_meta(ep, dm=dm, dm_root=up, rel_path=dest.relative_to(ep), node_type="below-experiment"))
+        self.assertTrue(has_meta(ep, rel_path=dest.relative_to(ep), node_type="below-experiment"))
 
     def test_install_folder_recursively_as_subfolders(self):
         dm, root = create_tmp_dm_instance()
@@ -209,7 +209,7 @@ class DataManagerInstallIntoTreeTest(unittest.TestCase):
         self.assertTrue((deep / "b.txt").exists())
 
         # Metadata created on the top dataset for the folder
-        self.assertTrue(has_meta(ep, dm=dm, dm_root=root, rel_path=Path("analysis/bundleA"),
+        self.assertTrue(has_meta(ep, rel_path=Path("analysis/bundleA"),
                                  node_type="below-experiment"))
 
     def test_install_into_existing_subdataset_with_dest_rel_file(self):
@@ -248,7 +248,7 @@ class DataManagerInstallIntoTreeTest(unittest.TestCase):
         self.assertTrue((target / "result.csv").exists(), "file not placed into the dest_rel dataset")
 
         # Metadata added to the target dataset, includes filename
-        self.assertTrue(has_meta(ep, dm=dm, dm_root=root, rel_path=Path("analysis/run_001/result.csv"),
+        self.assertTrue(has_meta(ep, rel_path=Path("analysis/run_001/result.csv"),
                                  node_type="below-experiment"))
 
     def test_install_into_missing_target_raises(self):
