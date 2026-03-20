@@ -601,26 +601,28 @@ def remove_siblings(dataset: str | os.PathLike, sibling_name: str = 'gin', recur
 
     dl.siblings(action='remove', dataset=ds_path, name=sibling_name, recursive=recursive)
 
-def save_branch(ds_path: str | Path) -> None:
+def save_branch(path: str | Path) -> None:
     """
-    Saves an entire datalad branch, walking from the given dataset path up to root.
-    :param ds_path: (str | Path) dataset path
+    Saves an entire datalad branch, walking from the given dataset path up to root. The path given can point to
+    content below the dataset.
+
+    :param path: (str | Path) path to dataset or content nested within
     :return: No return value
     """
-    ds_path = Path(ds_path).expanduser().resolve()
-    save_dataset(path=ds_path, recursive=True)
+    path = Path(path).expanduser().resolve()
+    ds_root = save_dataset(path=path, recursive=True)
     while True:
-        path = ds_path.parent
-        ds = Dataset(str(path))
+        up = ds_root.parent
+        ds = Dataset(str(up))
         if ds.is_installed():
-            save_dataset(path=path, recursive=False)
+            save_dataset(path=up, recursive=False)
         else:
             break
 
 
 def save_dataset(path: str | os.PathLike,
                  recursive: bool = True,
-                 message: str = None) -> None:
+                 message: str = None) -> Path:
     """
     Saves the current dataset to disk. Path can point to nested item in the dataset. The function will walk up
     the file tree until it finds a dataset.
@@ -628,7 +630,7 @@ def save_dataset(path: str | os.PathLike,
     :param path: (str or Path) path to the dataset or content in dataset
     :param recursive: (bool) step recursively into subdatasets
     :param message: (str) optional commit message
-    :return: no return value
+    :return: (Path) the identified root directory of the dataset
     """
     path = Path(path).resolve().absolute()
     ds_root, rel = find_dataset_root_and_rel(path)
@@ -639,6 +641,8 @@ def save_dataset(path: str | os.PathLike,
     else:
         # just save content, if path is not that of a subdataset
         dl.save(dataset=str(ds_root), path=str(path), recursive=False, message=message)
+
+    return ds_root
 
 
 def siblings(dataset, *, recursive=False, action='query'):
