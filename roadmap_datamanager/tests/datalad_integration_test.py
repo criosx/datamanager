@@ -9,7 +9,7 @@ import uuid
 from pathlib import Path, PurePosixPath
 
 from roadmap_datamanager.datamanager import DataManager
-from roadmap_datamanager.helpers import set_git_annex_path
+from roadmap_datamanager import datalad_gin_api as dgapi
 from roadmap_datamanager.metadata import Metadata
 
 from typing import ClassVar
@@ -21,7 +21,7 @@ ENV_ERRORS = []
 # git-annex available and recent enough
 def annex_ok():
     try:
-        set_git_annex_path()
+        dgapi.set_git_annex_path()
         out = subprocess.check_output(["git-annex", "version"], text=True)
     except FileNotFoundError:
         return "git-annex not found on PATH for this Python process"
@@ -59,12 +59,11 @@ def create_tmp_dm_instance():
         user_name="Frank Heinrich",
         user_email="fheinrich@cmu.edu",
         default_project="roadmap",
-        datalad_profile="text2git",
     )
     return dm, root
 
 def has_meta(ds: Path, *, dm: DataManager, dm_root: Path, rel_path: Path, node_type: str) -> bool:
-    dataset_id = dm.get_dataset_id(ds)
+    dataset_id = dgapi.get_dataset_id(ds)
 
     # POSIX-normalized relative path string, '' for dataset itself
     relposix = '.' if rel_path == Path() else str(PurePosixPath(*rel_path.parts))
@@ -298,7 +297,7 @@ class DataManagerPublishGINSiblingTest(unittest.TestCase):
             private=False,
             recursive=True,
         )
-        sibs = self.dm.siblings(dataset=str(self.root), action="query")
+        sibs = dgapi.siblings(dataset=str(self.root), action="query")
         gin_urls = [s.get("url") for s in sibs if s.get("name") == "gin" and s.get("url")]
         self.assertTrue(gin_urls, "Could not determine GIN clone URL from siblings()")
         # Prefer HTTPS if both exist
@@ -318,7 +317,7 @@ class DataManagerPublishGINSiblingTest(unittest.TestCase):
         return other_dir
 
     def _gin_clone_url(self) -> str:
-        sibs = self.dm.siblings(dataset=str(self.root), action="query")
+        sibs = dgapi.siblings(dataset=str(self.root), action="query")
         # prefer HTTPS URL for easy parsing
         urls = [s.get("url") for s in sibs if s.get("name") == "gin" and s.get("url")]
         urls.sort(key=lambda u: (not u.startswith("http"), u))
@@ -332,15 +331,15 @@ class DataManagerPublishGINSiblingTest(unittest.TestCase):
 
         # Add a subdataset under the experiment
         sub = cls.root / "p" / "c" / "e" / "analysis"
-        cls.dm.create(path=str(sub), dataset=str(cls.root / "p" / "c" / "e"))
-        cls.dm.save(path=str(cls.root), recursive=True, message="add analysis subdataset")
+        dgapi.create_dataset(path=str(sub), dataset=str(cls.root / "p" / "c" / "e"))
+        cls.dm.save_dataset(path=str(cls.root), recursive=True, message="add analysis subdataset")
 
         # Make sure there is at least one commit to push everywhere
         (cls.root / "README.md").write_text("root readme\n")
-        cls.dm.save(path=str(cls.root / "README.md"), message="seed root")
+        cls.dm.save_dataset(path=str(cls.root / "README.md"), message="seed root")
 
         (sub / "note.bin").write_bytes(b"\x00\x01")
-        cls.dm.save(path=str(sub / "note.bin"), message="seed subdataset")
+        cls.dm.save_dataset(path=str(sub / "note.bin"), message="seed subdataset")
 
         cls.repo_name = f"scidata-{uuid.uuid4().hex}"
 
@@ -357,7 +356,7 @@ class DataManagerPublishGINSiblingTest(unittest.TestCase):
         #      IgnoreUnknown WarnWeakCrypto
         #      WarnWeakCrypto no - pq - kex
 
-        # Wire to GIN (create or reconfigure), recursively
+        # Wire to GIN (create_dataset or reconfigure), recursively
         self.dm.publish_gin_sibling(
             sibling_name="gin",
             repo_name=self.repo_name,
@@ -368,25 +367,25 @@ class DataManagerPublishGINSiblingTest(unittest.TestCase):
         )
 
         # Sibling exists on root
-        root_sibs = self.dm.siblings(dataset=str(self.root), action="query")
+        root_sibs = dgapi.siblings(dataset=str(self.root), action="query")
         self.assertTrue(any(s.get("name") == "gin" for s in root_sibs), "root missing 'gin' sibling")
 
         # Sibling exists on subdataset
         sub = self.root / "p" / "c" / "e" / "analysis"
-        sub_sibs = self.dm.siblings(dataset=str(sub), action="query")
+        sub_sibs = dgapi.siblings(dataset=str(sub), action="query")
         self.assertTrue(any(s.get("name") == "gin" for s in sub_sibs), "subdataset missing 'gin' sibling")
 
         # Try a lightweight publish to ensure remote usability (Git + annex content)
         #    (publish_gin_sibling already pushed, but we do a small follow-up change to verify)
         (self.root / "TOUCH.txt").write_text("tick\n")
-        self.dm.save(path=str(self.root / "TOUCH.txt"), recursive=False, message="touch")
-        self.dm.push_to_remotes(dataset=str(self.root), sibling_name="gin", recursive=False)
+        self.dm.save_dataset(path=str(self.root / "TOUCH.txt"), recursive=False, message="touch")
+        dgapi.push_to_remotes(dataset=str(self.root), sibling_name="gin", recursive=False)
 
         # Optional integrity check: drop local content for annexed file and get it back from GIN
         #    This proves annex on GIN is actually serving content.
-        self.dm.drop_content(dataset=str(sub), path=str(sub / "note.bin"))
-        self.assertFalse(self.dm.has_content(dataset=sub, path="note.bin"))
-        self.dm.get_content(dataset=str(sub), path=str(sub / "note.bin"))  # fetches from 'gin' if needed
+        dgapi.drop_content(dataset=str(sub), path=str(sub / "note.bin"))
+        self.assertFalse(dgapi.has_content(dataset=sub, path="note.bin"))
+        dgapi.get_content(dataset=str(sub), path=str(sub / "note.bin"))  # fetches from 'gin' if needed
         self.assertTrue((sub / "note.bin").exists() and (sub / "note.bin").stat().st_size == 2)
 
     def test_02_push_to_gin(self):
@@ -396,75 +395,75 @@ class DataManagerPublishGINSiblingTest(unittest.TestCase):
         (self.root / "CHANGES.md").write_text("root change\n")
         sub = self.root / "p" / "c" / "e" / "analysis"
         (sub / "new.bin").write_bytes(b"\xAA\xBB\xCC")
-        self.dm.save(path=str(self.root), recursive=True, message="prepare push_to_remotes test")
+        self.dm.save_dataset(path=str(self.root), recursive=True, message="prepare push_to_remotes test")
 
         # Use DataManager API
-        self.dm.push_to_remotes(dataset=str(self.root), recursive=True, message="dm push_to_remotes")
+        dgapi.push_to_remotes(dataset=str(self.root), recursive=True, message="dm push_to_remotes")
 
         # Verify by cloning fresh and checking both commits and annex content
         dm2, other = create_tmp_dm_instance()
-        dm2.clone_from_remote(dest=other, source_url=gin_url)
+        dm2.clone_from_remote(dest=other, source_url=gin_url, repo_name=self.repo_name)
         self.assertTrue((other / "CHANGES.md").exists(), "Root commit did not reach GIN")
         # Annex file exists as pointer initially; fetch bytes:
-        dm2.get_content(dataset=str(other / "p" / "c" / "e" / "analysis"),
-                        path=str(other / "p" / "c" / "e" / "analysis" / "new.bin"))
+        dgapi.get_content(dataset=str(other / "p" / "c" / "e" / "analysis"),
+                         path=str(other / "p" / "c" / "e" / "analysis" / "new.bin"))
         self.assertEqual((other / "p" / "c" / "e" / "analysis" / "new.bin").stat().st_size, 3)
 
     def test_03_pull_from_gin(self):
         gin_url = self._ensure_published()
         # Second working copy simulates another computer
         dm_other, other = create_tmp_dm_instance()
-        dm_other.clone_from_remote(dest=other, source_url=gin_url)
+        dm_other.clone_from_remote(dest=other, source_url=gin_url, repo_name=self.repo_name)
 
         # Change on original and push
         (self.root / "NOTE.txt").write_text("note v1\n")
-        self.dm.save(path=str(self.root / "NOTE.txt"), message="v1")
-        self.dm.push_to_remotes(dataset=str(self.root), recursive=True, message="push v1")
+        self.dm.save_dataset(path=str(self.root / "NOTE.txt"), message="v1")
+        dgapi.push_to_remotes(dataset=str(self.root), recursive=True, message="push v1")
 
         # Pull into the other clone
-        dm_other.pull_from_remotes(dataset=str(other), recursive=True)
+        dgapi.pull_from_remotes(dataset=str(other), recursive=True)
         self.assertTrue((other / "NOTE.txt").exists(), "Pull did not bring down new file")
 
         # Update again and verify second pull
         (self.root / "NOTE.txt").write_text("note v2\n")
-        self.dm.save(path=str(self.root / "NOTE.txt"), message="v2")
-        self.dm.push_to_remotes(dataset=str(self.root), recursive=True, message="push v2")
+        self.dm.save_dataset(path=str(self.root / "NOTE.txt"), message="v2")
+        dgapi.push_to_remotes(dataset=str(self.root), recursive=True, message="push v2")
 
-        dm_other.pull_from_remotes(dataset=str(other), recursive=True)
+        dgapi.pull_from_remotes(dataset=str(other), recursive=True)
         self.assertEqual((other / "NOTE.txt").read_text(), "note v2\n", "Pull did not merge latest changes")
 
     def test_04_get_data(self):
         gin_url = self._ensure_published()
         dm_other, other = create_tmp_dm_instance()
-        dm_other.clone_from_remote(dest=other, source_url=gin_url)
+        dm_other.clone_from_remote(dest=other, source_url=gin_url, repo_name=self.repo_name)
 
         sub_other = other / "p" / "c" / "e" / "analysis"
         target = sub_other / "note.bin"
 
         # Ensure local content is absent
-        dm_other.drop_content(dataset=str(sub_other), path=str(target))
-        self.assertFalse(dm_other.has_content(dataset=str(sub_other), path="note.bin"))
+        dgapi.drop_content(dataset=str(sub_other), path=str(target))
+        self.assertFalse(dgapi.has_content(dataset=str(sub_other), path="note.bin"))
 
         # Fetch bytes using DataManager API
-        dm_other.get_content(dataset=str(sub_other), path=str(target), recursive=False)
-        self.assertTrue(dm_other.has_content(dataset=str(sub_other), path="note.bin"))
+        dgapi.get_content(dataset=str(sub_other), path=str(target), recursive=False)
+        self.assertTrue(dgapi.has_content(dataset=str(sub_other), path="note.bin"))
         self.assertEqual(target.stat().st_size, 2)
 
     def test_05_drop_local(self):
         gin_url = self._ensure_published()
         dm_other, other = create_tmp_dm_instance()
-        dm_other.clone_from_remote(dest=other, source_url=gin_url)
+        dm_other.clone_from_remote(dest=other, source_url=gin_url, repo_name=self.repo_name)
 
         sub_other = other / "p" / "c" / "e" / "analysis"
         target = sub_other / "note.bin"
 
         # Ensure we have bytes locally first
-        dm_other.get_content(dataset=str(sub_other), path=str(target))
-        self.assertTrue(dm_other.has_content(dataset=str(sub_other), path="note.bin"))
+        dgapi.get_content(dataset=str(sub_other), path=str(target))
+        self.assertTrue(dgapi.has_content(dataset=str(sub_other), path="note.bin"))
 
         # Drop via DataManager API
-        dm_other.drop_content(dataset=str(sub_other), path=target, recursive=False)
-        self.assertFalse(dm_other.has_content(dataset=str(sub_other), path="note.bin"))
+        dgapi.drop_content(dataset=str(sub_other), path=target, recursive=False)
+        self.assertFalse(dgapi.has_content(dataset=str(sub_other), path="note.bin"))
 
     def test_06_remove_gin_repository(self):
         def _parse_owner_repo_from_url(url: str) -> tuple[str, str]:

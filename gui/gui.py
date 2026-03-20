@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (
 )
 
 from roadmap_datamanager.datamanager import DataManager, ALLOWED_CATEGORIES
-from roadmap_datamanager.helpers import find_dataset_root_and_rel
+from roadmap_datamanager import datalad_gin_api as dgapi
 
 from remote import GinRemoteDialog
 from core import create_light_palette
@@ -439,7 +439,7 @@ class MainWindow(QMainWindow):
 
         paths2 = []
         for p in paths:
-            ds_root, rel = find_dataset_root_and_rel(p, self.dm.cfg.dm_root)
+            ds_root, rel = dgapi.find_dataset_root_and_rel(p, self.dm.cfg.dm_root)
             if ds_root is None or rel is None:
                 continue
             rel_str = "." if rel == Path("../roadmap_datamanager") else rel.as_posix()
@@ -513,9 +513,9 @@ class MainWindow(QMainWindow):
         """
         Create exactly one dataset at the current level, using DataManager.init_tree().
         Allowed:
-          - at root: create a project
-          - at project: create a campaign
-          - at campaign: create an experiment
+          - at root: create_dataset a project
+          - at project: create_dataset a campaign
+          - at campaign: create_dataset an experiment
         Disabled:
           - at experiment or deeper
         """
@@ -524,7 +524,7 @@ class MainWindow(QMainWindow):
 
         level, parts = self._dm_current_level()
 
-        # we don't create datasets below experiment in this GUI
+        # we don't create_dataset datasets below experiment in this GUI
         if level in ("experiment", "category"):
             QMessageBox.information(
                 self,
@@ -552,7 +552,7 @@ class MainWindow(QMainWindow):
 
         # call datamanager
         if level == "root":
-            # create project
+            # create_dataset project
             self._run_in_worker(self.dm.init_tree, project=name)
             # current view is root -> refresh
         elif level == "project":
@@ -573,7 +573,7 @@ class MainWindow(QMainWindow):
             p = str(ds_root) + ':' + str(rel_str)
             try:
                 self._run_in_worker(
-                    self.dm.drop_content,
+                    dgapi.drop_content,
                     dataset=str(ds_root),
                     path=rel_str,
                     what="filecontent",
@@ -596,7 +596,7 @@ class MainWindow(QMainWindow):
                 path = str(Path(ds_root) / Path(rel_str))
             try:
                 self._run_in_worker(
-                    self.dm.get_content,
+                    dgapi.get_content,
                     dataset=str(ds_root),
                     path=path,
                     recursive=recursive
@@ -640,8 +640,8 @@ class MainWindow(QMainWindow):
             return
 
         # remove all known remote siblings
-        self.dm.remove_siblings(dataset=self.dm.cfg.dm_root, sibling_name='gin', recursive=True)
-        self.dm.remove_siblings(dataset=self.dm.cfg.dm_root, sibling_name='origin', recursive=True)
+        dgapi.remove_siblings(dataset=self.dm.cfg.dm_root, sibling_name='gin', recursive=True)
+        dgapi.remove_siblings(dataset=self.dm.cfg.dm_root, sibling_name='origin', recursive=True)
         self.dm_publish_to_remote(entire_tree=True, existing='reconfigure')
 
     def dm_publish_to_remote(self, entire_tree=False, existing='skip'):
@@ -741,13 +741,13 @@ class MainWindow(QMainWindow):
         If nothing is selected, try the current DM path.
         """
         if self.dm is None or self.dm_current_path is None:
-            QMessageBox.information(self, "No datamanager", "Select or create a datamanager first.")
+            QMessageBox.information(self, "No datamanager", "Select or create_dataset a datamanager first.")
             return
 
         item = self.dm_list.currentItem()
         target_path = Path(item.data(Qt.ItemDataRole.UserRole)) if item else self.dm_current_path
 
-        ds_root, rel = find_dataset_root_and_rel(target_path, self.dm.cfg.dm_root)
+        ds_root, rel = dgapi.find_dataset_root_and_rel(target_path, self.dm.cfg.dm_root)
         if ds_root is None:
             self.meta_title.setText("Metadata: —")
             self.metadata_update_viewer("No enclosing dataset found for this selection.")
@@ -834,7 +834,7 @@ class MainWindow(QMainWindow):
             p = str(ds_root)
             try:
                 self._run_in_worker(
-                    self.dm.pull_from_remotes,
+                    dgapi.pull_from_remotes,
                     dataset=ds_root,
                     recursive=True
                 )
@@ -847,7 +847,7 @@ class MainWindow(QMainWindow):
         and install them into the *current* DM location on the left.
         """
         if self.dm is None or self.dm_current_path is None:
-            QMessageBox.warning(self, "No datamanager", "Please select or create a datamanager first.")
+            QMessageBox.warning(self, "No datamanager", "Please select or create_dataset a datamanager first.")
             return
 
         # gather selected sources from the right file tree
@@ -993,7 +993,7 @@ class MainWindow(QMainWindow):
                                      "A datamanager root is required on first run.")
             return
 
-        # IMPORTANT: we re-create the DataManager with the new root.
+        # IMPORTANT: we re-create_dataset the DataManager with the new root.
         # It will merge with persisted values (user_name, user_email, etc.)
         try:
             dm = DataManager(root=path)
@@ -1015,11 +1015,11 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "No datamanager", "No active datamanager.")
             return
         if self.meta_current_ds_root is None:
-            QMessageBox.information(self, "No selection", "Nothing to save. Select an item and load metadata "
+            QMessageBox.information(self, "No selection", "Nothing to save_dataset. Select an item and load metadata "
                                                           "first.")
             return
         if self.meta_current_payload is None:
-            QMessageBox.information(self, "No changes", "No metadata to save.")
+            QMessageBox.information(self, "No changes", "No metadata to save_dataset.")
             return
 
         ds_root = self.meta_current_ds_root
@@ -1039,7 +1039,7 @@ class MainWindow(QMainWindow):
                 extra=extra
             )
         except Exception as e:
-            QMessageBox.critical(self, "Save failed", f"Could not save metadata:\n{e}")
+            QMessageBox.critical(self, "Save failed", f"Could not save_dataset metadata:\n{e}")
 
     def metadata_update_viewer(self, message: str = None):
         """
@@ -1068,7 +1068,7 @@ class MainWindow(QMainWindow):
         if self.dm is None:
             return
         # simple pull
-        self.dm.pull_from_remotes(dataset=self.dm.cfg.dm_root, recursive=recursive)
+        dgapi.pull_from_remotes(dataset=self.dm.cfg.dm_root, recursive=recursive)
         self.status.showMessage("Pulled from GIN.")
 
 

@@ -1,8 +1,11 @@
+from __future__ import annotations
+
 import json
 import os
 
 from datetime import datetime, timezone
 from dataclasses import dataclass, field
+from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Optional, Dict, Callable
 
@@ -28,9 +31,6 @@ class DataManagerConfig:
     default_campaign: Optional[str] = None
     default_experiment: Optional[str] = None
 
-    # DataLad behavior
-    datalad_profile: Optional[str] = None
-
     # MetaLad envelope defaults
     extractor_name: str = "datamanager_v1"
     extractor_version: str = "1.0"
@@ -38,9 +38,6 @@ class DataManagerConfig:
     # Runtime knobs
     verbose: bool = True
     env: Dict[str, str] = field(default_factory=dict)
-
-    # Clock (for tests)
-    now_fn: Callable[[], datetime] = lambda: datetime.now(timezone.utc)
 
     # GIN repository
     GIN_url: Optional[str] = None
@@ -71,8 +68,26 @@ def load_persistent_cfg() -> dict:
     except NotADirectoryError:
         return {}
 
+def save_persistent_cfg(data: dict | DataManagerConfig) -> None:
 
-def save_persistent_cfg(data: dict) -> None:
+    def _make_json_safe(obj):
+        # Ensure all values are JSON-safe
+        if isinstance(obj, Path):
+            return str(obj)
+        if isinstance(obj, datetime):
+            return obj.isoformat()
+        if isinstance(obj, dict):
+            return {k: _make_json_safe(v) for k, v in obj.items()}
+        if isinstance(obj, list):
+            return [_make_json_safe(v) for v in obj]
+        return obj
+
     cfg_path = default_config_path()
     cfg_path.parent.mkdir(parents=True, exist_ok=True)
-    cfg_path.write_text(json.dumps(data, indent=2))
+
+    # Normalize input
+    if is_dataclass(data):
+        data = asdict(data)
+
+    safe_data = _make_json_safe(data)
+    cfg_path.write_text(json.dumps(safe_data, indent=2))
