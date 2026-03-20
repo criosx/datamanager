@@ -442,7 +442,7 @@ class MainWindow(QMainWindow):
             ds_root, rel = dgapi.find_dataset_root_and_rel(p)
             if ds_root is None or rel is None:
                 continue
-            rel_str = "." if rel == Path("../roadmap_datamanager") else rel.as_posix()
+            rel_str = "." if rel == Path("..") else rel.as_posix()
             paths2.append((ds_root, rel_str))
         return paths2
 
