@@ -180,7 +180,7 @@ def ssh_test_connection(host_alias: str) -> tuple[bool, str, str]:
 
     return False, f"SSH connection to '{host_alias}' failed.", combined
 
-def UI_fragment_datalad(cfg, dataroot_dir):
+def UI_fragment_datalad(cfg):
     """
     Datalad Streamlit UI fragment
     :param cfg: the calling apps configuration dataclass
@@ -198,8 +198,10 @@ def UI_fragment_datalad(cfg, dataroot_dir):
     if not cfg.use_datalad:
         return cfg, None
 
+    root_dir = cfg.dm_root
+
     dm = datamanager.DataManager(
-        root=dataroot_dir,
+        root=root_dir,
         user_name=cfg.user_name,
         user_email=cfg.user_email,
         default_project=cfg.project,
@@ -210,7 +212,6 @@ def UI_fragment_datalad(cfg, dataroot_dir):
         verbose=True
     )
 
-    root_dir = dataroot_dir
     project_dir = root_dir / cfg.project
     campaign_dir = project_dir / cfg.campaign
     exp_dir = campaign_dir / cfg.experiment
