@@ -3,11 +3,14 @@ from __future__ import annotations
 import json
 import os
 
-from datetime import datetime, timezone
+from datetime import datetime
 from dataclasses import dataclass, field
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
-from typing import Optional, Dict, Callable
+from typing import Optional, Dict
+
+from roadmap_datamanager import metadata as md
+from roadmap_datamanager import datalad_gin_api as dgapi
 
 try:
     from platformdirs import user_config_dir
@@ -27,9 +30,9 @@ class DataManagerConfig:
     lab_group: Optional[str] = None
 
     # Defaults
-    default_project: Optional[str] = None
-    default_campaign: Optional[str] = None
-    default_experiment: Optional[str] = None
+    project: Optional[str] = None
+    campaign: Optional[str] = None
+    experiment: Optional[str] = None
 
     # MetaLad envelope defaults
     extractor_name: str = "datamanager_v1"
@@ -46,6 +49,39 @@ class DataManagerConfig:
 
     # Datamanager root directory
     dm_root: Optional[str] = None
+
+def bootstrap_config(path, cfg):
+    """
+    Obtains config parameters from a path by walking up and identifying datasets. Requires a datamanager-compatible
+    config dataclass with fields: root, user_name, user_email, project, campaign, and experiment.
+    :param path: The starting path (ideally below-experiment)
+    :param cfg: the configuation dataclass
+    :return: the modifie configuation dataclass
+    """
+
+    bp = Path(str(path)).expanduser().resolve()
+    while True:
+        node_type, ds_path = dgapi.get_dataset_nodetype(bp)
+        meta = md.Metadata(ds_path)
+        metadata = meta.get()
+        if node_type == 'root':
+            cfg.dm_root = str(ds_path)
+            cfg.user_name = metadata['user_name']
+            cfg.user_email = metadata['user_email']
+            break
+        elif node_type == 'project':
+            cfg.project = metadata['name']
+        elif node_type == 'campaign':
+            cfg.campaign = metadata['name']
+        elif node_type == 'experiment':
+            cfg.experiment = metadata['name']
+        elif node_type == 'below-experiment':
+            # any below-experiment content will still return the lowest hierarchy dataset, i.e, the experiment
+            cfg.experiment = metadata['name']
+        else:
+            raise RuntimeError(f"Encountered unknown dataset type {node_type}. Cannot bootstrap datamanager.")
+        bp = bp.parent
+    return cfg
 
 
 def default_config_path() -> Path:

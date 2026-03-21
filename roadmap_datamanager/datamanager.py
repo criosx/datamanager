@@ -27,7 +27,6 @@ GITIGNORE = """
 autocontrol/
 """
 
-
 class DataManager:
     """
     ROADMAP Data Manager class.
@@ -44,7 +43,6 @@ class DataManager:
         GIN_url: Optional[str] = None,
         GIN_repo: Optional[str] = None,
         GIN_user: Optional[str] = None,
-        bootstrap_path: Optional[str, Path] = None,
         datalad_profile: Optional[str] = "text2git",
         extractor_name: str = "datamanager_v1",
         extractor_version: str = "1.0",
@@ -80,37 +78,12 @@ class DataManager:
         eff_root = root or persisted.get("dm_root", ".")
         eff_user_name = user_name or persisted.get("user_name", "default")
         eff_user_email = user_email or persisted.get("user_email", "default")
-        eff_default_project = default_project or persisted.get("default_project")
-        eff_default_campaign = default_campaign or persisted.get("default_campaign")
-        eff_default_experiment = default_experiment or persisted.get("default_experiment")
+        eff_default_project = default_project or persisted.get("project")
+        eff_default_campaign = default_campaign or persisted.get("campaign")
+        eff_default_experiment = default_experiment or persisted.get("experiment")
         eff_GIN_url = GIN_url or persisted.get("GIN_url")
         eff_GIN_repo = GIN_repo or persisted.get("GIN_repo")
         eff_GIN_user = GIN_user or persisted.get("GIN_user")
-
-        if bootstrap_path is not None:
-            bp = Path(str(bootstrap_path)).expanduser().resolve()
-            while True:
-                node_type, ds_path = dgapi.get_dataset_nodetype(bp)
-                meta = md.Metadata(ds_path)
-                metadata = meta.get()
-                if node_type == 'root':
-                    eff_root = str(ds_path)
-                    eff_user_name = metadata['user_name']
-                    eff_user_email = metadata['user_email']
-                    break
-                elif node_type == 'project':
-                    eff_default_project = metadata['name']
-                elif node_type == 'campaign':
-                    eff_default_campaign = metadata['name']
-                elif node_type == 'experiment':
-                    eff_default_experiment = metadata['name']
-                elif node_type == 'below-experiment':
-                    # any below-experiment content will still return the lowest hierarchy dataset, i.e, the experiment
-                    eff_default_experiment = metadata['name']
-                else:
-                    raise RuntimeError(f"Encountered unknown dataset type {node_type}. Cannot bootstrap datamanager.")
-
-                bp = Path(str(bootstrap_path)).expanduser().resolve().parent
 
         # build config
         root_path = Path(eff_root).expanduser().resolve()
@@ -119,9 +92,9 @@ class DataManager:
             dm_root=str(root_path),
             user_name=eff_user_name,
             user_email=eff_user_email,
-            default_project=eff_default_project,
-            default_campaign=eff_default_campaign,
-            default_experiment=eff_default_experiment,
+            project=eff_default_project,
+            campaign=eff_default_campaign,
+            experiment=eff_default_experiment,
             extractor_name=extractor_name,
             extractor_version=extractor_version,
             verbose=verbose,
@@ -135,9 +108,9 @@ class DataManager:
         if self.cfg.verbose:
             print(f"[DataManager] root={root_path}")
             print(f"[DataManager] user={self.cfg.user_name} <{self.cfg.user_email}>")
-            if self.cfg.default_project or self.cfg.default_campaign:
-                print(f"[DataManager] defaults: project={self.cfg.default_project} "
-                      f"campaign={self.cfg.default_campaign}")
+            if self.cfg.project or self.cfg.campaign:
+                print(f"[DataManager] defaults: project={self.cfg.project} "
+                      f"campaign={self.cfg.campaign}")
 
     @classmethod
     def from_persisted(cls):
@@ -609,9 +582,9 @@ class DataManager:
             "dm_root": str(self.cfg.dm_root),
             "user_name": self.cfg.user_name,
             "user_email": self.cfg.user_email,
-            "default_project": self.cfg.default_project,
-            "default_campaign": self.cfg.default_campaign,
-            "default_experiment": self.cfg.default_experiment,
+            "project": self.cfg.project,
+            "campaign": self.cfg.campaign,
+            "experiment": self.cfg.experiment,
             "GIN_url": self.cfg.GIN_url,
             "GIN_repo": self.cfg.GIN_repo,
             "GIN_user": self.cfg.GIN_user,
