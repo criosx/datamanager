@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import json
 import os
 import platform
 import shlex
 import streamlit as st
 import subprocess
 
+from roadmap_datamanager import datamanager
 from roadmap_datamanager import datalad_gin_api as dgapi
 
 from pathlib import Path
@@ -177,6 +179,86 @@ def ssh_test_connection(host_alias: str) -> tuple[bool, str, str]:
 
     return False, f"SSH connection to '{host_alias}' failed.", combined
 
+def UI_fragment_datalad(cfg, dataroot_dir):
+    """
+    Datalad Streamlit UI fragment
+    :param cfg: the calling apps configuration dataclass
+    :param dataroot_dir: the root directory of the repository
+    :return: (dataclass , Datamanager) the modified configuration dataclass, the Datamanager instance (None if invalid)
+    """
+    st.write("""
+    ## DataLad
+    """)
+
+    use_datalad = st.toggle(label='Use DataLad', value=st.session_state.cfg.use_datalad)
+    if use_datalad != st.session_state.cfg.use_datalad:
+        cfg.use_datalad = use_datalad
+
+    if not cfg.use_datalad:
+        return cfg, None
+
+    dm = datamanager.DataManager(
+        root=dataroot_dir,
+        user_name=cfg.user_name,
+        user_email=cfg.user_email,
+        default_project=cfg.project,
+        default_campaign=cfg.campaign,
+        GIN_url=cfg.GIN_url,
+        GIN_repo=cfg.user_name,
+        GIN_user=cfg.GIN_user,
+        verbose=True
+    )
+
+    root_dir = dataroot_dir
+    project_dir = root_dir / cfg.project
+    campaign_dir = project_dir / cfg.campaign
+    exp_dir = campaign_dir / cfg.experiment
+
+    _, r_installed, r_status = dm.get_status(dataset=root_dir, recursive=False)
+    _, p_installed, p_status = dm.get_status(dataset=project_dir, recursive=False)
+    _, c_installed, c_status = dm.get_status(dataset=campaign_dir, recursive=False)
+    _, e_installed, e_status = dm.get_status(dataset=exp_dir, recursive=False)
+    ds_installed = r_installed and p_installed and c_installed and e_installed
+
+    # all dirs exists at this point in the script as checked above
+    stc7, stc8 = st.columns([7, 3])
+    if not ds_installed:
+        with stc7:
+            st.info('DataLad branch (project / campaign / experiment) is not (fully) initialized.')
+        with stc8:
+            if st.button("Initialize DataLad Tree.", type='primary'):
+                # ensure that data structure is a datalad tree
+                dm.init_tree(project=cfg.project, campaign=cfg.campaign, experiment=cfg.experiment, force=True)
+                st.rerun()
+        return cfg, None
+
+    status = r_status + p_status + c_status + e_status
+    with st.expander(label='Detailed Status', expanded=False):
+        only_non_clean = st.toggle(label='Show only non-clean entries.', value=True)
+        if only_non_clean:
+            status = [element for element in status if element['state'] != 'clean']
+        # Pretty-print the combined DataLad status (list of dicts) as JSON.
+        st.text(json.dumps(status, indent=2, sort_keys=True, default=str))
+
+    clean = True
+    for element in status:
+        if element['state'] != 'clean':
+            clean = False
+            break
+
+    if not clean:
+        with stc7:
+            st.warning('DataLad branch (project / campaign / experiment) has unsaved changes.')
+        with stc8:
+            if st.button("Save DataLad Branch.", type='primary'):
+                dgapi.save_branch(path=exp_dir)
+                st.rerun()
+        return cfg, None
+
+    with stc7:
+        st.success('DataLad branch (project / campaign / experiment) is saved (clean).')
+    return cfg, dm
+
 
 def UI_fragment_SSH_connection(cfg):
     gin_user = st.text_input('GIN User', value=cfg.GIN_user)
@@ -231,10 +313,10 @@ def UI_fragment_SSH_connection(cfg):
                 st.error(message)
         st.stop()
 
-    colUIfSc1, colUIfSc2, colUIfSc3 = st.columns([3, 4, 3])
-    with colUIfSc1:
+    stc1, stc2, stc3 = st.columns([3, 4, 3])
+    with stc1:
         file_browser_button(public_key_path.parent, label="Show SSH Directory ↗️")
-    with colUIfSc2:
+    with stc2:
         if st.button("Test SSH Connection", type='primary'):
             ok, summary, details = ssh_test_connection(ssh_host_alias)
             if ok:
@@ -282,22 +364,23 @@ def UI_fragment_user(cfg, user_root_dir):
 
     dataroot_dir = user_root_dir / cfg.user_name
 
-    col1, col2, col3 = st.columns([6, 1, 3])
+    stc4, stc5, stc6 = st.columns([6, 1, 3])
     info_text = "Data root directory " + str(dataroot_dir)
     if dataroot_dir.is_dir():
         info_text += " exists."
-        with col1:
+        with stc4:
             st.text(info_text)
-        with col2:
+        with stc5:
             file_browser_button(dataroot_dir)
     else:
         info_text += (" has not been created, yet. If you intend to use GIN remote storage, make sure that the SSH "
                       "connection is working properly. The script will attempt to clone an existing repository for "
-                      "this user when creating a data root.")
+                      "this user when creating a data root. Potential reconfigurations in that cloned repository "
+                      "might prompt for a GIN ")
 
-        with col1:
+        with stc4:
             st.text(info_text)
-        with col3:
+        with stc6:
             if st.button("Create Data Root Directory", type='primary'):
                 dataroot_dir.mkdir(parents=True, exist_ok=True)
                 # check SSH connection
