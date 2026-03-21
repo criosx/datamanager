@@ -362,18 +362,20 @@ def UI_fragment_user(cfg, user_root_dir):
         cfg.experiment = None
 
     if cfg.user_name is None:
-        return cfg, None
+        cfg.dm_root = None
+        return cfg
 
-    dataroot_dir = user_root_dir / cfg.user_name
+    dm_root = user_root_dir / cfg.user_name
 
     stc4, stc5, stc6 = st.columns([6, 1, 3])
-    info_text = "Data root directory " + str(dataroot_dir)
-    if dataroot_dir.is_dir():
+    info_text = "Data root directory " + str(dm_root)
+    if dm_root.is_dir():
         info_text += " exists."
+        cfg.dm_root = dm_root
         with stc4:
             st.text(info_text)
         with stc5:
-            file_browser_button(dataroot_dir)
+            file_browser_button(dm_root)
     else:
         info_text += (" has not been created, yet. If you intend to use GIN remote storage, make sure that the SSH "
                       "connection is working properly. The script will attempt to clone an existing repository for "
@@ -384,7 +386,8 @@ def UI_fragment_user(cfg, user_root_dir):
             st.text(info_text)
         with stc6:
             if st.button("Create Data Root Directory", type='primary'):
-                dataroot_dir.mkdir(parents=True, exist_ok=True)
+                dm_root.mkdir(parents=True, exist_ok=True)
+                cfg.dm_root = dm_root
                 # check SSH connection
                 ssh_host_alias = cfg.SSH_host_alias
                 ok = False
@@ -396,7 +399,7 @@ def UI_fragment_user(cfg, user_root_dir):
                     try:
                         source_url = 'https://' + cfg.GIN_url + '/' + cfg.GIN_user + '/' + cfg.user_name
                         dgapi.clone_from_remote(
-                            dest=dataroot_dir,
+                            dest=dm_root,
                             user_name=cfg.GIN_user,
                             repo_name=cfg.user_name
                         )
@@ -408,4 +411,4 @@ def UI_fragment_user(cfg, user_root_dir):
         st.write("""## Remote Connection Setup""")
         cfg = UI_fragment_SSH_connection(cfg)
 
-    return cfg, dataroot_dir
+    return cfg
