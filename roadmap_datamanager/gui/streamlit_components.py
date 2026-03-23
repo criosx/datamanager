@@ -263,7 +263,8 @@ def UI_fragment_PCE(cfg):
     """
     Implemenents a Project / Campaign / Experiment selection Streamlit UI fragment
     :param cfg: a datamanager compatible configuration dataclase
-    :return: (cfg, Bool) the (modified) configuration dataclass, whether the P/C/E folders have been created
+    :return: (cfg, Bool, Bool) the (modified) configuration dataclass, whether the P/C/E folders exist, whether the
+            fragment requests a rerun
     """
     def category_input(ds_root, cfg_item, category_name):
         category_list = []
@@ -298,7 +299,7 @@ def UI_fragment_PCE(cfg):
     if project and project != cfg.project:
         cfg.project = project
     if cfg.project is None:
-        return cfg, False
+        return cfg, False, False
 
     campaign = category_input(
         ds_root=dm_root / cfg.project,
@@ -308,7 +309,7 @@ def UI_fragment_PCE(cfg):
     if campaign and campaign != cfg.campaign:
         cfg.campaign = campaign
     if cfg.campaign is None:
-        return cfg, False
+        return cfg, False, False
 
     experiment = category_input(
         ds_root=dm_root / cfg.project / cfg.campaign,
@@ -318,7 +319,7 @@ def UI_fragment_PCE(cfg):
     if experiment and experiment != cfg.experiment:
         cfg.experiment = experiment
     if cfg.experiment is None:
-        return cfg, False
+        return cfg, False, False
 
     col4, col5, col6 = st.columns([6, 1, 3])
     exp_dir = dm_root / cfg.project / cfg.campaign / cfg.experiment
@@ -329,7 +330,7 @@ def UI_fragment_PCE(cfg):
             st.text(info_text)
         with col5:
             file_browser_button(exp_dir)
-        return cfg, True
+        return cfg, True, False
     else:
         info_text += " has not been created, yet."
         with col4:
@@ -337,10 +338,9 @@ def UI_fragment_PCE(cfg):
         with col6:
             if st.button("Create Experimental Directory", type='primary'):
                 exp_dir.mkdir(parents=True, exist_ok=True)
-                st.rerun()
-                return cfg, True
+                return cfg, True, True
 
-    return cfg, False
+    return cfg, False, False
 
 def UI_fragment_SSH_connection(cfg):
     """
