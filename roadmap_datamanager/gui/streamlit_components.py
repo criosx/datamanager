@@ -263,7 +263,7 @@ def UI_fragment_PCE(cfg):
     """
     Implemenents a Project / Campaign / Experiment selection Streamlit UI fragment
     :param cfg: a datamanager compatible configuration dataclase
-    :return: (cfg, Bool) the (modified) configuration dataclass, whether to create the P/C/E folders upon return
+    :return: (cfg, Bool) the (modified) configuration dataclass, whether the P/C/E folders have been created
     """
     def category_input(ds_root, cfg_item, category_name):
         category_list = []
@@ -329,6 +329,7 @@ def UI_fragment_PCE(cfg):
             st.text(info_text)
         with col5:
             file_browser_button(exp_dir)
+        return cfg, True
     else:
         info_text += " has not been created, yet."
         with col4:
