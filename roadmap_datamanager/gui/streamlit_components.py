@@ -261,6 +261,103 @@ def UI_fragment_datalad(cfg):
         st.success('DataLad branch (project / campaign / experiment) is saved (clean).')
     return cfg, dm
 
+def UI_fragment_PCE(cfg):
+    """
+    Implemenents a Project / Campaign / Experiment selection Streamlit UI fragment
+    :param cfg: a datamanager compatible configuration dataclase
+    :return: (cfg, Bool) the (modified) configuration dataclass, whether to create the P/C/E folders upon return
+    """
+    st.write("""
+        ## Project / Campaign / Experiment
+        """)
+
+    project_list = []
+    default_project = None
+    dm_root = cfg.dm_root
+
+    if dm_root.is_dir():
+        project_list = [p.name for p in dm_root.iterdir() if p.is_dir() and not p.name.startswith(".")]
+        project_list.sort()
+    if cfg.project is not None:
+        if cfg.project not in project_list:
+            project_list.append(cfg.project)
+            project_list.sort()
+        default_project = project_list.index(cfg.project)
+    project = st.selectbox(
+        "Project Name",
+        options=project_list,
+        index=default_project,
+        placeholder='Create or select a project.',
+        accept_new_options=True)
+
+    if project and project != cfg.project:
+        cfg.project = project
+    if cfg.project is None:
+        return cfg, False
+
+    campaign_list = []
+    default_campaign = None
+    ds_root = cfg.dm_root / cfg.project
+    if ds_root.is_dir():
+        campaign_list = [p.name for p in ds_root.iterdir() if p.is_dir() and not p.name.startswith(".")]
+        campaign_list.sort()
+    if cfg.campaign is not None:
+        if cfg.campaign not in campaign_list:
+            campaign_list.append(cfg.campaign)
+            campaign_list.sort()
+        default_campaign = campaign_list.index(cfg.campaign)
+    campaign = st.selectbox(
+        "Campaign Name",
+        options=campaign_list,
+        index=default_campaign,
+        placeholder='Create or select a campaign.',
+        accept_new_options=True)
+
+    if campaign and campaign != cfg.campaign:
+        cfg.campaign = campaign
+    if cfg.campaign is None:
+        return cfg, False
+
+    experiment_list = []
+    default_experiment = None
+    ds_root = cfg.dm_root / cfg.project / cfg.campaign
+    if ds_root.is_dir():
+        experiment_list = [p.name for p in ds_root.iterdir() if p.is_dir() and not p.name.startswith(".")]
+        experiment_list.sort()
+    if cfg.experiment is not None:
+        if cfg.experiment not in experiment_list:
+            experiment_list.append(cfg.experiment)
+            experiment_list.sort()
+        default_experiment = experiment_list.index(cfg.experiment)
+    experiment = st.selectbox(
+        "Experiment Name",
+        options=experiment_list,
+        index=default_experiment,
+        placeholder='Create or select an experiment.',
+        accept_new_options=True)
+    if experiment and experiment != cfg.experiment:
+        cfg.experiment = experiment
+    if cfg.experiment is None:
+        return cfg, False
+
+    col4, col5, col6 = st.columns([6, 1, 3])
+    exp_dir = dm_root / cfg.experiment
+    info_text = "Experiment directory " + str(exp_dir)
+    if exp_dir.is_dir():
+        info_text += " exists."
+        with col4:
+            st.text(info_text)
+        with col5:
+            file_browser_button(exp_dir)
+    else:
+        info_text += " has not been created, yet."
+        with col4:
+            st.text(info_text)
+        with col6:
+            if st.button("Create Experimental Directory", type='primary'):
+                return cfg, True
+
+    return cfg, False
 
 def UI_fragment_SSH_connection(cfg):
     gin_user = st.text_input('GIN User', value=cfg.GIN_user)
