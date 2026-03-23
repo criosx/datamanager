@@ -184,7 +184,6 @@ def UI_fragment_datalad(cfg):
     """
     Datalad Streamlit UI fragment
     :param cfg: the calling apps configuration dataclass
-    :param dataroot_dir: the root directory of the repository
     :return: (dataclass , Datamanager) the modified configuration dataclass, the Datamanager instance (None if invalid)
     """
     st.write("""
@@ -198,7 +197,7 @@ def UI_fragment_datalad(cfg):
     if not cfg.use_datalad:
         return cfg, None
 
-    root_dir = cfg.dm_root
+    root_dir = Path(cfg.dm_root).expanduser().resolve()
 
     dm = datamanager.DataManager(
         root=root_dir,
@@ -290,7 +289,7 @@ def UI_fragment_PCE(cfg):
         ## Project / Campaign / Experiment
         """)
 
-    dm_root = cfg.dm_root
+    dm_root = Path(cfg.dm_root).expanduser().resolve()
 
     project = category_input(
         ds_root=dm_root,
@@ -419,7 +418,7 @@ def UI_fragment_user(cfg, user_root_dir):
                  """)
     user_list = []
     default_user = None
-    root = user_root_dir
+    root = Path(user_root_dir).expanduser().resolve()
     if root.is_dir():
         user_list = [p.name for p in root.iterdir() if p.is_dir() and not p.name.startswith(".")]
         user_list.sort()
