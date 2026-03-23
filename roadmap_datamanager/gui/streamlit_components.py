@@ -418,11 +418,12 @@ def UI_fragment_SSH_connection(cfg):
 
     return cfg
 
-def UI_fragment_user(cfg, user_root_dir):
+def UI_fragment_user(cfg, user_root_dir, enable_user_selection=True):
     """
     Implementeation of a user selection dialog as a Streamlit UI fragment
     :param cfg: a datamanager compatibile configuration dataclass
     :param user_root_dir: (str | Path) the root directory in which datamanager trees for each user are placed
+    :param enable_user_selection: (bool) whether to enable user selection
     :return: the modified configuration dataclass
     """
     st.write("""
@@ -434,17 +435,19 @@ def UI_fragment_user(cfg, user_root_dir):
     if root.is_dir():
         user_list = [p.name for p in root.iterdir() if p.is_dir() and not p.name.startswith(".")]
         user_list.sort()
-    if cfg.user_name is not None:
-        if cfg.user_name not in user_list:
-            user_list.append(cfg.user_name)
+    if cfg.dm_root is not None:
+        if cfg.dm_root.name not in user_list:
+            user_list.append(cfg.dm_root.name)
             user_list.sort()
-        default_user = user_list.index(cfg.user_name)
+        default_user = user_list.index(cfg.dm_root.name)
     user = st.selectbox(
         "User Name",
         options=user_list,
         index=default_user,
         placeholder='Create or select a user.',
-        accept_new_options=True)
+        accept_new_options=True,
+        disabled=not enable_user_selection,
+    )
     if user and user != cfg.user_name:
         cfg.user_name = user
         cfg.project = None
