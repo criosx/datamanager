@@ -335,6 +335,7 @@ def UI_fragment_PCE(cfg):
             st.text(info_text)
         with col6:
             if st.button("Create Experimental Directory", type='primary'):
+                exp_dir.mkdir(parents=True, exist_ok=True)
                 return cfg, True
 
     return cfg, False
