@@ -323,7 +323,7 @@ def UI_fragment_PCE(cfg):
         return cfg, False
 
     col4, col5, col6 = st.columns([6, 1, 3])
-    exp_dir = dm_root / cfg.experiment
+    exp_dir = dm_root / cfg.project / cfg.campaign / cfg.experiment
     info_text = "Experiment directory " + str(exp_dir)
     if exp_dir.is_dir():
         info_text += " exists."
