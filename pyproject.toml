@@ -1,7 +1,7 @@
 [project]
 name = "roadmap_datamanager"
 version = "0.1.0"
-description = "Opinionated procedures & metadata exporter for scientific DataLad trees"
+description = "Repository & metadata exporter for scientific DataLad trees"
 authors = [{ name="Frank Heinrich", email="fheinrich@cmu.edu" }]
 requires-python = ">=3.10"
 dependencies = [

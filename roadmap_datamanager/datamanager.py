@@ -15,6 +15,7 @@ from datalad.distribution.dataset import Dataset
 from roadmap_datamanager import configuration as dmc
 from roadmap_datamanager import metadata as md
 from roadmap_datamanager import datalad_gin_api as dgapi
+from roadmap_datamanager import datalad_utils
 
 #  Install policy
 ALLOWED_CATEGORIES = [
@@ -376,7 +377,7 @@ class DataManager:
         :param mode: (str) 'envelope' to obtain entire recore, 'meta' to obtain only the actual payload
         :return: metadata dict
         """
-        ds_path, path, absolute_path, relposix = dgapi.ensure_paths(ds_path, path)
+        ds_path, path, absolute_path, relposix = dataset_utils.ensure_paths(ds_path, path)
         meta = md.Metadata(ds_root=ds_path, path=path)
         record = meta.get(mode=mode)
         return record
@@ -492,7 +493,7 @@ class DataManager:
         ds = Dataset(str(dataset))
 
         # compute repo name
-        root_path, relpath, ds_path, relposix = dgapi.ensure_paths(ds_path=self.cfg.dm_root, path=dataset)
+        root_path, relpath, ds_path, relposix = dataset_utils.ensure_paths(ds_path=self.cfg.dm_root, path=dataset)
         if repo_name is None:
             repo_name = self.cfg.GIN_repo
         if str(relposix) != '.':
@@ -521,7 +522,7 @@ class DataManager:
             if entry.get('action') != 'configure-sibling':
                 continue
             try:
-                _root_path, _relpath, entry_ds_path, _relposix = dgapi.ensure_paths(
+                _root_path, _relpath, entry_ds_path, _relposix = dataset_utils.ensure_paths(
                     ds_path=self.cfg.dm_root,
                     path=Path(entry['path'])
                 )
@@ -537,7 +538,7 @@ class DataManager:
             # take it from the 'configure-sibling' action
             if entry['action'] != 'configure-sibling':
                 continue
-            root_path, relpath, ds_path, relposix = dgapi.ensure_paths(ds_path=self.cfg.dm_root, path=Path(entry['path']))
+            root_path, relpath, ds_path, relposix = dataset_utils.ensure_paths(ds_path=self.cfg.dm_root, path=Path(entry['path']))
 
             if relposix == '.':
                 # exclude root for parent registration
