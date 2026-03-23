@@ -267,74 +267,56 @@ def UI_fragment_PCE(cfg):
     :param cfg: a datamanager compatible configuration dataclase
     :return: (cfg, Bool) the (modified) configuration dataclass, whether to create the P/C/E folders upon return
     """
+    def category_input(ds_root, cfg_item, category_name):
+        category_list = []
+        default_category = None
+        if ds_root.is_dir():
+            category_list = [p.name for p in ds_root.iterdir() if p.is_dir() and not p.name.startswith(".")]
+            category_list.sort()
+        if cfg_item is not None:
+            if cfg_item not in category_list:
+                category_list.append(cfg_item)
+                category_list.sort()
+            default_category = category_list.index(cfg_item)
+        category = st.selectbox(
+            label=category_name,
+            options=category_list,
+            index=default_category,
+            placeholder=f"Create or select a {category_name}",
+            accept_new_options=True)
+        return category
+
     st.write("""
         ## Project / Campaign / Experiment
         """)
 
-    project_list = []
-    default_project = None
     dm_root = cfg.dm_root
 
-    if dm_root.is_dir():
-        project_list = [p.name for p in dm_root.iterdir() if p.is_dir() and not p.name.startswith(".")]
-        project_list.sort()
-    if cfg.project is not None:
-        if cfg.project not in project_list:
-            project_list.append(cfg.project)
-            project_list.sort()
-        default_project = project_list.index(cfg.project)
-    project = st.selectbox(
-        "Project Name",
-        options=project_list,
-        index=default_project,
-        placeholder='Create or select a project.',
-        accept_new_options=True)
-
+    project = category_input(
+        ds_root=dm_root,
+        cfg_item=cfg.project,
+        category_name='project'
+    )
     if project and project != cfg.project:
         cfg.project = project
     if cfg.project is None:
         return cfg, False
 
-    campaign_list = []
-    default_campaign = None
-    ds_root = cfg.dm_root / cfg.project
-    if ds_root.is_dir():
-        campaign_list = [p.name for p in ds_root.iterdir() if p.is_dir() and not p.name.startswith(".")]
-        campaign_list.sort()
-    if cfg.campaign is not None:
-        if cfg.campaign not in campaign_list:
-            campaign_list.append(cfg.campaign)
-            campaign_list.sort()
-        default_campaign = campaign_list.index(cfg.campaign)
-    campaign = st.selectbox(
-        "Campaign Name",
-        options=campaign_list,
-        index=default_campaign,
-        placeholder='Create or select a campaign.',
-        accept_new_options=True)
-
+    campaign = category_input(
+        ds_root=dm_root / cfg.project,
+        cfg_item=cfg.campaign,
+        category_name='campaign'
+    )
     if campaign and campaign != cfg.campaign:
         cfg.campaign = campaign
     if cfg.campaign is None:
         return cfg, False
 
-    experiment_list = []
-    default_experiment = None
-    ds_root = cfg.dm_root / cfg.project / cfg.campaign
-    if ds_root.is_dir():
-        experiment_list = [p.name for p in ds_root.iterdir() if p.is_dir() and not p.name.startswith(".")]
-        experiment_list.sort()
-    if cfg.experiment is not None:
-        if cfg.experiment not in experiment_list:
-            experiment_list.append(cfg.experiment)
-            experiment_list.sort()
-        default_experiment = experiment_list.index(cfg.experiment)
-    experiment = st.selectbox(
-        "Experiment Name",
-        options=experiment_list,
-        index=default_experiment,
-        placeholder='Create or select an experiment.',
-        accept_new_options=True)
+    experiment = category_input(
+        ds_root=dm_root / cfg.project / cfg.campaign,
+        cfg_item=cfg.experiment,
+        category_name='experiment'
+    )
     if experiment and experiment != cfg.experiment:
         cfg.experiment = experiment
     if cfg.experiment is None:
