@@ -1,7 +1,5 @@
 from __future__ import annotations
-from dataclasses import dataclass
 
-from datalad.distribution.dataset import Dataset
 from datalad.support.exceptions import IncompleteResultsError
 from datalad import api as dl
 from datalad.api import Dataset
@@ -10,7 +8,7 @@ from pathlib import Path, PurePosixPath
 import shutil
 import subprocess
 import shlex
-from typing import Optional, Dict, Any
+from typing import Dict, Any
 import os
 
 from roadmap_datamanager import metadata as md
@@ -227,6 +225,7 @@ def get_content(dataset: str | os.PathLike, path: str | os.PathLike | list[str |
         targets = [path]
     else:
         targets = list(path)
+
     for i, p in enumerate(targets):
         p = Path(p)
         if not p.is_absolute():
@@ -319,10 +318,10 @@ def get_dataset_version(ds: Dataset) -> str:
 
 def get_git_sync_status(
         dataset: str | os.PathLike,
-    sibling_name: str = "gin",
-    branch: str | None = None,
-    fetch: bool = True,
-    from_parent: bool = False
+        sibling_name: str = "gin",
+        branch: str | None = None,
+        fetch: bool = True,
+        from_parent: bool = False
 ) -> Dict[str, Any]:
     """
     Determine whether a local Git/DataLad dataset branch is up to date with, ahead of,
@@ -553,7 +552,7 @@ def push_to_remotes(dataset: str | os.PathLike, recursive: bool = True, message:
     :param dataset: (str, os.Pathlike) path to the dataset to push to GIN
     :param recursive: (bool) whether to recursively push subdatasets
     :param sibling_name: (str) name of the sibling datasets to push to GIN
-    :param message: (str) optional commit message to push to GIN
+    :param message: (str) optional commit message to push to GIN.
     :param push_annex_data: (bool) whether to push annexed content to GIN
     :return: no return value
     """
@@ -688,4 +687,3 @@ def ssh_to_https(u: str) -> str:
             path = path[:-4]
         return f"https://{host}{path}"
     return u
-
