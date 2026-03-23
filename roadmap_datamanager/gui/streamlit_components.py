@@ -341,6 +341,12 @@ def UI_fragment_PCE(cfg):
     return cfg, False
 
 def UI_fragment_SSH_connection(cfg):
+    """
+    A Stremlit UI fragment that facilates the setup of an SSH connection via a public / private key pair to a service
+    such as gin.g-node.org.
+    :param cfg: a datamanager compatible configuration dataclase
+    :return: the (modified) configuration dataclass
+    """
     gin_user = st.text_input('GIN User', value=cfg.GIN_user)
     if gin_user is not None and  gin_user != cfg.GIN_user:
         cfg.GIN_user = gin_user
@@ -413,6 +419,12 @@ def UI_fragment_SSH_connection(cfg):
     return cfg
 
 def UI_fragment_user(cfg, user_root_dir):
+    """
+    Implementeation of a user selection dialog as a Streamlit UI fragment
+    :param cfg: a datamanager compatibile configuration dataclass
+    :param user_root_dir: (str | Path) the root directory in which datamanager trees for each user are placed
+    :return: the modified configuration dataclass
+    """
     st.write("""
         ## User
                  """)
