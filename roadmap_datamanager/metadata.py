@@ -4,8 +4,7 @@ import json
 from pathlib import Path
 
 from datalad.distribution.dataset import Dataset
-from datalad_utils import get_dataset_version
-from roadmap_datamanager.datalad_utils import ensure_paths
+from roadmap_datamanager.datalad_utils import ensure_paths, get_dataset_version
 
 from datetime import datetime, timezone
 from typing import Dict, Any
