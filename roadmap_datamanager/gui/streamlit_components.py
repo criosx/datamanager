@@ -436,10 +436,11 @@ def UI_fragment_user(cfg, user_root_dir, enable_user_selection=True):
         user_list = [p.name for p in root.iterdir() if p.is_dir() and not p.name.startswith(".")]
         user_list.sort()
     if cfg.dm_root is not None:
-        if cfg.dm_root.name not in user_list:
-            user_list.append(cfg.dm_root.name)
+        dm_root = Path(cfg.dm_root).expanduser().resolve()
+        if dm_root.name not in user_list:
+            user_list.append(dm_root.name)
             user_list.sort()
-        default_user = user_list.index(cfg.dm_root.name)
+        default_user = user_list.index(dm_root.name)
     user = st.selectbox(
         "User Name",
         options=user_list,
