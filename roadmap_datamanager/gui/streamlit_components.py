@@ -366,12 +366,12 @@ def UI_fragment_user(cfg, user_root_dir):
         return cfg
 
     dm_root = user_root_dir / cfg.user_name
+    cfg.dm_root = dm_root
 
     stc4, stc5, stc6 = st.columns([6, 1, 3])
     info_text = "Data root directory " + str(dm_root)
     if dm_root.is_dir():
         info_text += " exists."
-        cfg.dm_root = dm_root
         with stc4:
             st.text(info_text)
         with stc5:
@@ -387,7 +387,6 @@ def UI_fragment_user(cfg, user_root_dir):
         with stc6:
             if st.button("Create Data Root Directory", type='primary'):
                 dm_root.mkdir(parents=True, exist_ok=True)
-                cfg.dm_root = dm_root
                 # check SSH connection
                 ssh_host_alias = cfg.SSH_host_alias
                 ok = False
