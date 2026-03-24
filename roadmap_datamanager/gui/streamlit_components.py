@@ -213,7 +213,7 @@ def UI_fragment_app_storage(cfg,
         gitignore_folders = []
 
     st.write("""
-        ## App Storage Folders
+        ## Below-Experiment Storage Folders
         """)
 
     exp_dir = cfg.dm_root / cfg.project / cfg.campaign / cfg.experiment
