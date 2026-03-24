@@ -232,7 +232,7 @@ def UI_fragment_app_storage(cfg,
         if special_action_enabled:
             st.button(special_action_label, type='primary', on_click=special_action, args=special_action_arguments)
         else:
-            file_browser_button(Path(cfg[f"{storage_folders[0]}_dir"]))
+            file_browser_button(exp_dir / storage_folders[0])
 
     if gitignore_folders:
         st.text(f"Some storage folders are not archived due to frequent in-place modification: {gitignore_folders}")
