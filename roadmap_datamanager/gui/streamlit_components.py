@@ -259,6 +259,116 @@ def UI_fragment_datalad(cfg):
         st.success('DataLad branch (project / campaign / experiment) is saved (clean).')
     return cfg, dm
 
+
+def UI_fragment_GIN_actions(cfg, dm):
+    st.write("""
+    ## GIN Remote Storage
+    """)
+
+    use_GIN = st.toggle(label='Use GIN', value=st.session_state.cfg.use_GIN)
+    if use_GIN != cfg.use_GIN:
+        cfg.use_GIN = use_GIN
+
+    if not use_GIN:
+        return cfg, False
+
+    with st.expander(label='Connection Setup', expanded=False):
+        cfg = UI_fragment_SSH_connection(cfg)
+
+    exp_dir = Path(cfg.dm_root).expanduser().resolve() / cfg.project / cfg.campaign / cfg.experiment
+    with st.expander(label='Repository Actions', expanded=True):
+        status = dgapi.get_git_sync_status(dataset=exp_dir)
+        ok = status['ok']
+        state = status['state']
+        message = status['message']
+        rerun = False
+
+        with st.expander(label='Detailed Status', expanded=False):
+            st.text(json.dumps(status, indent=2, sort_keys=True, default=str))
+
+        if state == "not_dataset":
+            st.info(message)
+            st.error("This should never happen at this point in the script.")
+
+        elif state == "no_remote":
+            st.info(message)
+            st.text(
+                "Experiment does not yet have a remote repository. When creating a remote repository for the current "
+                "experiment, repositories for all other projects / campaigns / experiments will be created or updated.")
+            if st.button("Create Remote Repository", type='primary'):
+                dm.publish_gin_sibling(
+                    sibling_name='gin',
+                    repo_name=cfg.user_name,
+                    dataset=cfg.dm_root,
+                    recursive=True,
+                    push_annex_data=True,
+                    existing='reconfigure'
+                )
+                rerun = True
+
+        elif state in ['branch_failed', 'detached_head', 'no_upstream', 'compare_failed', 'parse_failed']:
+            st.error(state + ': ' + message)
+            st.text('A solution to this problem is outside the abilities of this script.')
+
+        elif state == 'fetch_failed':
+            status_parent = dgapi.get_git_sync_status(dataset=exp_dir, from_parent=True)
+
+            st.error('Status from Experiment Dataset: ' + state + ': ' + message)
+            st.info('Status from parent Category Dataset: ' + status_parent['state'] + ': ' + status_parent['message'])
+
+            if status_parent['ok'] and status_parent['state'] != 'no_remote':
+                st.text('The parent dataset repository appears to be o.k. If the remote repository for the experiment '
+                        'dataset has been deleted, you can try to remove and republish the experiment dataset only.')
+                if st.button('Remove and republish stale remote siblings for entire Datalad tree', type='primary'):
+                    dgapi.remove_siblings(dataset=exp_dir, recursive=False)
+                    dm.publish_gin_sibling(
+                        sibling_name='gin',
+                        repo_name=cfg.user_name,
+                        dataset=exp_dir,
+                        recursive=False,
+                        push_annex_data=True
+                    )
+                    rerun = True
+            else:
+                st.text("The remote parent dataset repository appears to be not o.k., as well. If the entire remote "
+                        "repository tree has been deleted, you can try to remove all all stale siblings and republish "
+                        "the entire tree again.")
+                if st.button('Remove and republish stale remote siblings for the current Experiment only.',
+                             type='primary'):
+                    dgapi.remove_siblings(dataset=cfg.dm_root, recursive=True)
+                    rerun = True
+
+        elif state == 'up_to_date':
+            st.success("Local and remote branches are up-to-date.")
+
+        elif state == 'ahead':
+            st.warning("Local branch is ahead.")
+            if st.button('Push local branch to remote.', type='primary'):
+                dgapi.push_to_remotes(dataset=exp_dir, recursive=True, push_annex_data=True)
+                rerun = True
+
+        elif state == 'behind':
+            st.warning("Local branch is behind.")
+            if st.button('Update local branch from remote.', type='primary'):
+                dgapi.pull_from_remotes(dataset=exp_dir, recursive=True)
+                dgapi.get_content(dataset=exp_dir, recursive=True)
+                rerun = True
+
+        elif state == 'diverged':
+            st.warning("Local branch and remote are diverged. Feel free to sync manually.")
+            col14, col15 = st.columns([5, 5])
+            with col14:
+                if st.button('Update local branch from remote.', type='primary'):
+                    dgapi.pull_from_remotes(dataset=exp_dir, recursive=True)
+                    dgapi.get_content(dataset=exp_dir, recursive=True)
+                    rerun = True
+            with col15:
+                if st.button('Push local branch to remote.', type='primary'):
+                    dgapi.push_to_remotes(dataset=exp_dir, recursive=True, push_annex_data=True)
+                    rerun = True
+
+        return cfg, rerun
+
 def UI_fragment_PCE(cfg):
     """
     Implemenents a Project / Campaign / Experiment selection Streamlit UI fragment
