@@ -6,6 +6,32 @@ from datalad import api as dl
 from datalad.distribution.dataset import Dataset
 from datalad.support.exceptions import IncompleteResultsError
 
+def ensure_gitignore_entry(exp_dir: str | Path, folder: str) -> bool:
+    """
+    Ensure that '{folder}/' exists as a line in exp_dir/.gitignore.
+
+    :param exp_dir: (str or Path) the experiment directory
+    :param folder: (str) the folder under the experiment directory to ignore
+    :return: (Bool) True if the file was changed, False if the entry already existed.
+    """
+
+    exp_dir = Path(exp_dir).expanduser().resolve()
+    gitignore_path = exp_dir / ".gitignore"
+
+    entry = folder.strip().rstrip("/") + "/"
+
+    if gitignore_path.exists():
+        lines = gitignore_path.read_text(encoding="utf-8").splitlines()
+    else:
+        lines = []
+
+    if entry in lines:
+        return False
+
+    lines.append(entry)
+    text = "\n".join(lines) + "\n"
+    gitignore_path.write_text(text, encoding="utf-8")
+    return True
 
 def ensure_paths(ds_path, path):
     """

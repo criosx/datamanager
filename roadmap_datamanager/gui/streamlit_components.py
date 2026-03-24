@@ -4,11 +4,13 @@ import json
 import os
 import platform
 import shlex
+import shutil
 import streamlit as st
 import subprocess
 
 from roadmap_datamanager import datamanager
 from roadmap_datamanager import datalad_gin_api as dgapi
+from roadmap_datamanager import datalad_utils
 
 from pathlib import Path
 
@@ -184,6 +186,65 @@ def ssh_test_connection(host_alias: str) -> tuple[bool, str, str]:
         return True, f"SSH connection to '{host_alias}' succeeded.", combined
 
     return False, f"SSH connection to '{host_alias}' failed.", combined
+
+
+def UI_fragment_app_storage(cfg,
+                            storage_folders=None,
+                            gitignore_folders=None,
+                            special_action=None,
+                            special_action_arguments=None,
+                            special_action_label='',
+                            special_action_enabled=True):
+    """
+    Streamlit fragment to initialize app specific storage folders
+    :param cfg: A datamanager compatible configuratoin dataclass
+    :param storage_folders: (list) name of storage folders to establish below the Experiment level
+    :param gitignore_folders: (list) folder names to include in the .gitignore file at the Experiment level
+    :param special_action: (function) a special action available to be called via a button press once all folders are
+                                      initialized
+    :param special_action_arguments: (list of keyword args)arguments to be passed to the special function
+    :param special_action_label: (str) label to be displayed on the button triggering the special action
+    :param special_action_enabled: (bool) whether to display the special action button
+    :return: (cfg, Bool) The modified configuration dataclass, whether to rerun the script after return
+    """
+    if storage_folders is None:
+        return cfg, False
+    if gitignore_folders is None:
+        gitignore_folders = []
+
+    st.write("""
+        ## App Storage Folders
+        """)
+
+    exp_dir = cfg.dm_root / cfg.project / cfg.campaign / cfg.experiment
+    col7, col8 = st.columns([7, 3])
+
+    for folder in storage_folders:
+        folder_dir = exp_dir / folder
+        if cfg[f"{folder}_dir"] is None or not folder_dir.is_dir():
+            folder_dir.mkdir(parents=True, exist_ok=True)
+            cfg[f"{folder}_dir"] = folder_dir
+            if folder in gitignore_folders:
+                datalad_utils.ensure_gitignore_entry(exp_dir, folder)
+        with col7:
+            st.success(f"{folder} storage directory: {cfg[f'{folder}_dir']}")
+
+    with col8:
+        if special_action_enabled:
+            st.button(special_action_label, type='primary', on_click=special_action, args=special_action_arguments)
+        else:
+            file_browser_button(Path(cfg[f"{storage_folders[0]}_dir"]))
+
+    if Path(cfg[f"{storage_folders[0]}_dir"]).expanduser().resolve().is_dir() and gitignore_folders:
+        st.text(f"Some storage folders are not archived due to frequent in-place modification: {gitignore_folders}")
+        if st.button("Make an archived copy of the storage folder(s)."):
+            for folder in gitignore_folders:
+                archive_dir = exp_dir / folder
+                if archive_dir.exists():
+                    shutil.rmtree(archive_dir)
+                shutil.copytree((exp_dir / folder), (exp_dir / f'{folder}_archive'))
+
+    return cfg, False
 
 
 def UI_fragment_datalad(cfg):
