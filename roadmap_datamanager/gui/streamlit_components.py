@@ -17,6 +17,7 @@ def file_browser_button(path: Path, label="↗️"):
         if st.button(label, help=f"Open {path}"):
             open_in_file_browser(path)
 
+
 def open_in_file_browser(path: Path):
     if not path.exists():
         return
@@ -29,6 +30,7 @@ def open_in_file_browser(path: Path):
         subprocess.run(["explorer", path])
     elif system == "Linux":
         subprocess.run(["xdg-open", path])
+
 
 def ssh_config_block(host_alias: str, hostname: str, username: str) -> str:
     return (
@@ -82,10 +84,12 @@ def ssh_config_has_entry(host_alias: str, hostname: str | None = None, username:
 
     return False, f"No SSH config entry for host '{host_alias}'."
 
+
 def ssh_default_key_path(hostname: str, username: str) -> Path:
     safe_host = hostname.replace(".", "_").replace("/", "_")
     safe_user = username.replace(".", "_").replace("/", "_")
     return Path.home() / ".ssh" / f"id_ed25519_{safe_user}_{safe_host}"
+
 
 def ssh_ensure_ssh_dir() -> Path:
     ssh_dir = Path.home() / ".ssh"
@@ -95,6 +99,7 @@ def ssh_ensure_ssh_dir() -> Path:
     except OSError:
         pass
     return ssh_dir
+
 
 def ssh_generate_keypair(private_key_path: Path, comment: str = "") -> tuple[bool, str]:
     ssh_ensure_ssh_dir()
@@ -128,6 +133,7 @@ def ssh_generate_keypair(private_key_path: Path, comment: str = "") -> tuple[boo
 
     output = (result.stdout or "").strip()
     return True, output if output else f"Created SSH key pair at {private_key_path}"
+
 
 def ssh_test_connection(host_alias: str) -> tuple[bool, str, str]:
     """
@@ -178,6 +184,7 @@ def ssh_test_connection(host_alias: str) -> tuple[bool, str, str]:
         return True, f"SSH connection to '{host_alias}' succeeded.", combined
 
     return False, f"SSH connection to '{host_alias}' failed.", combined
+
 
 def UI_fragment_datalad(cfg):
     """
@@ -261,6 +268,14 @@ def UI_fragment_datalad(cfg):
 
 
 def UI_fragment_GIN_actions(cfg, dm):
+    """
+    Implements a Streamlit UI fragment for GIN actions such as initialize, push, and pull remote GIN
+    repositories, and setting up an SSH connection
+    :param cfg: A datamanager compatible configuration dataclass.
+    :param dm: The local DataManager instance.
+    :return: (cfg, Bool) The modified configuation dataclass, whether to rerun the script after the UI fragment
+    """
+
     st.write("""
     ## GIN Remote Storage
     """)
@@ -369,6 +384,7 @@ def UI_fragment_GIN_actions(cfg, dm):
 
         return cfg, rerun
 
+
 def UI_fragment_PCE(cfg):
     """
     Implemenents a Project / Campaign / Experiment selection Streamlit UI fragment
@@ -452,6 +468,7 @@ def UI_fragment_PCE(cfg):
 
     return cfg, False, False
 
+
 def UI_fragment_SSH_connection(cfg):
     """
     A Stremlit UI fragment that facilates the setup of an SSH connection via a public / private key pair to a service
@@ -529,6 +546,7 @@ def UI_fragment_SSH_connection(cfg):
                 st.stop()
 
     return cfg
+
 
 def UI_fragment_user(cfg, user_root_dir, enable_user_selection=True):
     """
