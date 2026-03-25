@@ -69,7 +69,6 @@ class DataManager:
         :param GIN_url: (str | None) GIN URL
         :param GIN_repo: (str | None) GIN repository name
         :param GIN_user: (str | None) GIN username
-        :param bootstrap_path: (str | PathLike | None) bootstrap path
         """
 
         persisted = dmc.load_persistent_cfg()
