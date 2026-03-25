@@ -120,14 +120,15 @@ class DataManager:
             raise FileNotFoundError("No persistent configuration found — initialize once first.")
 
         return cls(
-            root=persisted.get("dm_root"),
-            user_name=persisted.get("user_name"),
-            user_email=persisted.get("user_email"),
-            default_project=persisted.get("default_project"),
-            default_campaign=persisted.get("default_campaign"),
-            GIN_url=persisted.get("GIN_url"),
-            GIN_repo=persisted.get("GIN_repo"),
-            GIN_user=persisted.get("GIN_user")
+            root=persisted.dm_root,
+            user_name=persisted.user_name,
+            user_email=persisted.user_email,
+            default_project=persisted.project,
+            default_campaign=persisted.campaign,
+            default_experiment=persisted.experiment,
+            GIN_url=persisted.GIN_url,
+            GIN_repo=persisted.GIN_repo,
+            GIN_user=persisted.GIN_user
         )
 
     def _ensure_dataset(self,
