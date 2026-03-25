@@ -72,19 +72,17 @@ class DataManager:
         :param bootstrap_path: (str | PathLike | None) bootstrap path
         """
 
-        # load persistent configuration
         persisted = dmc.load_persistent_cfg()
 
-        # compute effective values (= persisted ⟵ kwargs)
-        eff_root = root or persisted.get("dm_root", ".")
-        eff_user_name = user_name or persisted.get("user_name", "default")
-        eff_user_email = user_email or persisted.get("user_email", "default")
-        eff_default_project = default_project or persisted.get("project")
-        eff_default_campaign = default_campaign or persisted.get("campaign")
-        eff_default_experiment = default_experiment or persisted.get("experiment")
-        eff_GIN_url = GIN_url or persisted.get("GIN_url")
-        eff_GIN_repo = GIN_repo or persisted.get("GIN_repo")
-        eff_GIN_user = GIN_user or persisted.get("GIN_user")
+        eff_root = root or persisted.dm_root or "."
+        eff_user_name = user_name or persisted.user_name or "default"
+        eff_user_email = user_email or persisted.user_email or ""
+        eff_default_project = default_project or persisted.project
+        eff_default_campaign = default_campaign or persisted.campaign
+        eff_default_experiment = default_experiment or persisted.experiment
+        eff_GIN_url = GIN_url or persisted.GIN_url
+        eff_GIN_repo = GIN_repo or persisted.GIN_repo
+        eff_GIN_user = GIN_user or persisted.GIN_user
 
         # build config
         root_path = Path(eff_root).expanduser().resolve()
