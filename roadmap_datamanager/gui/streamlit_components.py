@@ -217,7 +217,7 @@ def UI_fragment_app_storage(cfg,
         """)
 
     exp_dir = cfg.dm_root / cfg.project / cfg.campaign / cfg.experiment
-    col7, col8 = st.columns([7, 3])
+    stc9, stc10, stc11 = st.columns([6, 1, 3])
 
     for folder in storage_folders:
         folder_dir = exp_dir / folder
@@ -225,14 +225,14 @@ def UI_fragment_app_storage(cfg,
             folder_dir.mkdir(parents=True, exist_ok=True)
             if folder in gitignore_folders:
                 datalad_utils.ensure_gitignore_entry(exp_dir, folder)
-        with col7:
-            st.success(f"{folder} storage directory: {str(folder_dir)}")
 
-    with col8:
-        if special_action_enabled:
+    with stc9:
+        st.success(f"Storage folders exist: {storage_folders}")
+    with stc10:
+        file_browser_button(exp_dir / storage_folders[0])
+    if special_action_enabled:
+        with stc11:
             st.button(special_action_label, type='primary', on_click=special_action, args=special_action_arguments)
-        else:
-            file_browser_button(exp_dir / storage_folders[0])
 
     if gitignore_folders:
         st.text(f"Some storage folders are not archived due to frequent in-place modification: {gitignore_folders}")

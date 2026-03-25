@@ -4,7 +4,7 @@ import json
 import os
 
 from datetime import datetime
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Optional, Dict
@@ -21,8 +21,8 @@ except ImportError:
 @dataclass
 class DataManagerConfig:
     # Required identity
-    user_name: str
-    user_email: str
+    user_name: str = 'default'
+    user_email: str = ''
 
     # Optional identity/context
     user_id: Optional[str] = None
@@ -95,14 +95,27 @@ def default_config_path() -> Path:
     return Path.home() / ".roadmap_datamanager" / "config.json"
 
 
-def load_persistent_cfg() -> dict:
+def load_persistent_cfg() -> DataManagerConfig:
+    """Load config from disk and return a DataConfig instance.
+
+    If no config file exists (or it cannot be parsed), returns a default DataConfig.
+    Unknown keys in the JSON are ignored to allow schema evolution.
+    """
     cfg_path = default_config_path()
     if not cfg_path.exists():
-        return {}
+        return DataManagerConfig()
+
     try:
-        return json.loads(cfg_path.read_text())
-    except NotADirectoryError:
-        return {}
+        raw = json.loads(cfg_path.read_text())
+    except (json.JSONDecodeError, OSError, NotADirectoryError):
+        return DataManagerConfig()
+
+    if not isinstance(raw, dict):
+        return DataManagerConfig()
+
+    valid_keys = {f.name for f in fields(DataManagerConfig)}
+    filtered = {k: v for k, v in raw.items() if k in valid_keys}
+    return DataManagerConfig(**filtered)
 
 def save_persistent_cfg(data: dict | DataManagerConfig) -> None:
 
