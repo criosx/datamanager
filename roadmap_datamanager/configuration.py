@@ -54,10 +54,15 @@ class BaseConfig:
     verbose: bool = True
     env: Dict[str, str] = field(default_factory=dict)
 
+    # DataLad behavior
+    use_datalad: bool = True
+
     # GIN repository
-    GIN_url: Optional[str] = None
-    GIN_repo: Optional[str] = None
-    GIN_user: Optional[str] = None
+    use_GIN: bool = False
+    GIN_url: str = 'gin.g-node.org'
+    GIN_repo: str = 'datamanager'
+    GIN_user: str = 'fhein'
+    SSH_host_alias: str = 'gin.g-node.org'
 
     # Datamanager root directory
     dm_root: Optional[str] = None
