@@ -577,18 +577,9 @@ class DataManager:
     def save_current_dm_configuration(self):
         """
         Save the current data manager configuration to disk.
+        :return: no return value
         """
-        dmc.save_persistent_cfg({
-            "dm_root": str(self.cfg.dm_root),
-            "user_name": self.cfg.user_name,
-            "user_email": self.cfg.user_email,
-            "project": self.cfg.project,
-            "campaign": self.cfg.campaign,
-            "experiment": self.cfg.experiment,
-            "GIN_url": self.cfg.GIN_url,
-            "GIN_repo": self.cfg.GIN_repo,
-            "GIN_user": self.cfg.GIN_user,
-        })
+        dmc.save_persistent_cfg(self.cfg)
 
     def save_meta(self,
                   ds_path: str | Path, *,

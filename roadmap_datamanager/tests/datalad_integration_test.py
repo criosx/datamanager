@@ -64,7 +64,7 @@ def create_tmp_dm_instance():
     return dm, root
 
 def has_meta(ds: Path, *, rel_path: Path, node_type: str) -> bool:
-    dataset_id = dataset_utils.get_dataset_id(ds)
+    dataset_id = datalad_utils.get_dataset_id(ds)
 
     # POSIX-normalized relative path string, '' for dataset itself
     relposix = '.' if rel_path == Path() else str(PurePosixPath(*rel_path.parts))
