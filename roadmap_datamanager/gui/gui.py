@@ -3,10 +3,11 @@ from __future__ import annotations
 import json
 import logging
 import sys
+import threading
 
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QThreadPool, Slot, QDir, QTimer
+from PySide6.QtCore import Qt, QThreadPool, Slot, QDir, QTimer, Signal
 from PySide6.QtGui import QPalette, QAction, QColor
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QComboBox, QDialog, QFileDialog, QFileSystemModel,
@@ -30,6 +31,10 @@ METADATA_MANUAL_ADD_ITEMS = [
 
 
 class MainWindow(QMainWindow):
+
+    # add a signal to class for background operation of checking the saving state of the datamanager tree
+    save_state_checked = Signal(bool, str)
+
     def __init__(self):
         super().__init__()
         self.setWindowTitle("DataManager GUI")
@@ -69,10 +74,16 @@ class MainWindow(QMainWindow):
         # do not add log_handler here
         # dl_logger.addHandler(log_handler)
 
+        # metadata update delay timer
         self._meta_update_timer = QTimer(self)
         self._meta_update_timer.setSingleShot(True)
         self._meta_update_timer.timeout.connect(self._dm_update_metadata_for_current_selection)
         self._pending_meta_item = None
+
+        # Background check state for global save-button updates
+        self._save_state_check_running = False
+        self._save_state_check_requested = False
+        self.save_state_checked.connect(self._apply_dm_save_button_state)
 
         # bootstrap DM
         self.bootstrap_datamanager()
@@ -90,9 +101,22 @@ class MainWindow(QMainWindow):
         self.busy_bar.setRange(0, 0)  # 0,0 = busy/indeterminate
         self.busy_bar.setTextVisible(False)
         self.busy_bar.setVisible(False)
-
-        # If you have a status bar:
+        # add to status bar:
         self.statusBar().addPermanentWidget(self.busy_bar)
+
+    @Slot(bool, str)
+    def _apply_dm_save_button_state(self, dirty: bool, message: str):
+        """
+        Apply the result of a background save-state check on the GUI thread.
+        """
+        self._save_state_check_running = False
+
+        if hasattr(self, "btn_save_all"):
+            self.btn_save_all.setEnabled(dirty)
+        self.status.showMessage(message)
+
+        if self._save_state_check_requested:
+            self._start_dm_save_button_state_check()
 
     def _choose_browser_root(self):
         path = QFileDialog.getExistingDirectory(self, "Select folder to browse")
@@ -189,15 +213,28 @@ class MainWindow(QMainWindow):
         self.btn_up = QPushButton("↑ Up")
         self.btn_refresh = QPushButton("Refresh")
         self.btn_new_dataset = QPushButton("New dataset here…")
-        # self.btn_show_meta = QPushButton("Show metadata")
+        self.btn_save_all = QPushButton("Save Changes")
+
         self.btn_up.clicked.connect(self.dm_go_up)
         self.btn_refresh.clicked.connect(self.dm_refresh_panel)
         self.btn_new_dataset.clicked.connect(self.dm_create_dataset_here)
-        # self.btn_show_meta.clicked.connect(self.dm_show_selected_metadata)
+
+        self.btn_save_all.setEnabled(False)
+        self.btn_save_all.clicked.connect(self.dm_save_entire_tree)
+        self.btn_save_all.setStyleSheet("""
+            QPushButton:enabled {
+                color: green;
+            }
+            QPushButton:disabled {
+                color: gray;
+            }
+        """)
+
         nav_bar.addWidget(self.btn_up)
         nav_bar.addWidget(self.btn_refresh)
         nav_bar.addWidget(self.btn_new_dataset)
-        # nav_bar.addWidget(self.btn_show_meta)
+        nav_bar.addWidget(self.btn_save_all)
+
         dm_layout.addLayout(nav_bar)
 
         # list of children at current level
@@ -734,6 +771,21 @@ class MainWindow(QMainWindow):
                 item.setToolTip("Other")
 
             self.dm_list.addItem(item)
+        self.dm_schedule_save_button_state_update()
+
+    def dm_save_entire_tree(self):
+        """
+        Saves the entire DataLad Tree
+        :return: no return value
+        """
+        if self.dm is None:
+            return
+
+        self._run_in_worker(
+            dgapi.save_branch,
+            refresh='dm',
+            path=self.dm.cfg.dm_root
+        )
 
     def dm_show_selected_metadata(self):
         """
@@ -840,6 +892,22 @@ class MainWindow(QMainWindow):
                 )
             except Exception as e:
                 self.logviewer_append_text(f"[WARN] Could not GIN publish {p}: {e}\n")
+
+    def dm_schedule_save_button_state_update(self):
+        """
+        Schedule a background check for unsaved changes in the entire datamanager tree.
+        Repeated requests while a check is already running are coalesced into one follow-up run.
+        """
+        if self.dm is None:
+            if hasattr(self, "btn_save_all"):
+                self.btn_save_all.setEnabled(False)
+            return
+
+        self._save_state_check_requested = True
+        if self._save_state_check_running:
+            return
+
+        self._start_dm_save_button_state_check()
 
     def fileviewer_install_selected_sources_into_dm(self):
         """
@@ -1005,6 +1073,44 @@ class MainWindow(QMainWindow):
             else:
                 return
         self.set_datamanager(dm)
+
+    def _start_dm_save_button_state_check(self):
+        """
+        Start one background status check on whether the datamanager tree has been saved.
+        """
+        if self.dm is None:
+            self.btn_save_all.setEnabled(False)
+            return
+
+        self._save_state_check_requested = False
+        self._save_state_check_running = True
+
+        dm = self.dm
+        dataset = dm.cfg.dm_root
+
+        def task():
+            try:
+                exists, installed, status = dm.get_status(
+                    dataset=dataset,
+                    recursive=True
+                )
+
+                if not exists or not installed or status is None:
+                    dirty = False
+                    message = "DataManager tree is not fully initialized."
+                else:
+                    dirty = any(entry.get("state") != "clean" for entry in status)
+                    if dirty:
+                        message = "DataManager tree has unsaved changes."
+                    else:
+                        message = "DataManager tree is clean."
+            except Exception as e:
+                dirty = False
+                message = f"Could not determine DataManager status: {e}"
+
+            self.save_state_checked.emit(dirty, message)
+
+        threading.Thread(target=task, daemon=True).start()
 
     def metadata_save_changes(self):
         """

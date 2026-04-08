@@ -65,7 +65,7 @@ class BaseConfig:
     SSH_host_alias: str = 'gin.g-node.org'
 
     # Datamanager root directory
-    dm_root: Optional[str] = None
+    dm_root: str = None
 
 
 def _filter_to_dataclass_fields(data: dict[str, Any], config_cls: Type[T]) -> dict[str, Any]:

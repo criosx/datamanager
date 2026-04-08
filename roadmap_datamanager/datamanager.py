@@ -230,10 +230,10 @@ class DataManager:
 
         if dataset is None:
             dataset = self.cfg.dm_root
-        dataset = Path(str(dataset)).expanduser().resolve()
-        if not dataset.is_dir():
+        dataset_path = Path(str(dataset)).expanduser().resolve()
+        if not dataset_path.is_dir():
             return False, False, None
-        ds = Dataset(str(dataset))
+        ds = Dataset(str(dataset_path))
         if not ds.is_installed():
             return True, False, None
         status = ds.status(recursive=recursive)
