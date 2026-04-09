@@ -218,6 +218,44 @@ class DataManager:
 
         return
 
+    def get_level(self, path: str | os.PathLike):
+        """
+        Determines the level of an item within the datamanager hierarchy and returns the path of the encompassing
+        dataset
+        .
+        :return: (level, parts, ds_path)
+                    level: ∈ {"root", "project", "campaign", "experiment", "category"}
+                    parts: (list) of path parts after cfg.dm_root
+                    ds_path: (Path) path to the lowest encompassing dataset of the item (not lower than experiment)
+        """
+        pcec = ["", "", "", "", ""]
+        level = "root"
+        ds_path = None
+
+        root = Path(self.cfg.dm_root)
+        cur = Path(path).expanduser().resolve()
+
+        try:
+            rel = cur.relative_to(root)
+        except ValueError:
+            level = "outside"
+            return level, pcec, None
+
+        pcec[0] = str(root)
+        ds_path = root
+        if str(rel) == ".":
+            return level, pcec, ds_path
+
+        level_list = ["project", "campaign", "experiment", "category"]
+        for i, (part, level) in enumerate(zip(rel.parts, level_list)):
+            pcec[i + 1] = part
+            if i < 3:
+                # stop at experiment level for path
+                ds_path = ds_path / part
+
+        return level, pcec, ds_path
+
+
     def get_status(self, *,
                    dataset: str | os.PathLike = None,
                    recursive: bool = False):

@@ -213,14 +213,14 @@ class MainWindow(QMainWindow):
         self.btn_up = QPushButton("↑ Up")
         self.btn_refresh = QPushButton("Refresh")
         self.btn_new_dataset = QPushButton("New dataset here…")
-        self.btn_save_all = QPushButton("Save Changes")
+        self.btn_save_all = QPushButton("Save Dataset")
 
         self.btn_up.clicked.connect(self.dm_go_up)
         self.btn_refresh.clicked.connect(self.dm_refresh_panel)
         self.btn_new_dataset.clicked.connect(self.dm_create_dataset_here)
 
         self.btn_save_all.setEnabled(False)
-        self.btn_save_all.clicked.connect(self.dm_save_entire_tree)
+        self.btn_save_all.clicked.connect(self.dm_save_branch)
         self.btn_save_all.setStyleSheet("""
             QPushButton:enabled {
                 color: green;
@@ -371,30 +371,18 @@ class MainWindow(QMainWindow):
 
     def _dm_current_level(self):
         """
-        Returns (level, parts)
-        level ∈ {"root", "project", "campaign", "experiment", "category"}
-        parts = path parts after dm.cfg.dm_root
+        :return: (level, parts, ds_path)
+                    level: ∈ {"root", "project", "campaign", "experiment", "category"}
+                    parts: (list) of path parts after cfg.dm_root
+                    ds_path: (Path) path to the lowest encompassing dataset of the item (not lower than experiment)
         """
         pcec = ["Not set.", "", "", "", ""]
         level = "root"
+        ds_path = None
         if self.dm is None or self.dm_current_path is None:
-            return level, pcec
-
-        root = Path(self.dm.cfg.dm_root)
-        cur = Path(self.dm_current_path)
-        rel = cur.relative_to(root)
-        pcec[0] = str(root)
-        if str(rel) == ".":
-            return level, pcec
-
-        level_list = ["project", "campaign", "experiment", "category"]
-        for i, part in enumerate(list(rel.parts)):
-            if i > 3:
-                # folders in categories are not reported here
-                break
-            pcec[i+1] = part
-            level = level_list[i]
-        return level, pcec
+            return level, pcec, ds_path
+        else:
+            return self.dm.get_level(self.dm_current_path)
 
     def _dm_open_item(self, item: QListWidgetItem):
         path_str = item.data(Qt.ItemDataRole.UserRole)
@@ -483,6 +471,45 @@ class MainWindow(QMainWindow):
             paths2.append((ds_root, rel_str))
         return paths2
 
+    def _start_dm_save_button_state_check(self):
+        """
+        Start one background status check on whether the datamanager tree has been saved.
+        """
+        if self.dm is None:
+            self.btn_save_all.setEnabled(False)
+            return
+
+        self._save_state_check_requested = False
+        self._save_state_check_running = True
+
+
+        # find the dataset path of the current dataset level given the current datamanager view
+        level, parts, dataset_path = self._dm_current_level()
+
+        def task():
+            try:
+                exists, installed, status = self.dm.get_status(
+                    dataset=dataset_path,
+                    recursive=True
+                )
+
+                if not exists or not installed or status is None:
+                    dirty = False
+                    message = "DataManager tree is not fully initialized."
+                else:
+                    dirty = any(entry.get("state") != "clean" for entry in status)
+                    if dirty:
+                        message = "DataManager tree has unsaved changes."
+                    else:
+                        message = "DataManager tree is clean."
+            except Exception as e:
+                dirty = False
+                message = f"Could not determine DataManager status: {e}"
+
+            self.save_state_checked.emit(dirty, message)
+
+        threading.Thread(target=task, daemon=True).start()
+
     def _worker_started(self):
         self._active_workers += 1
         if self._active_workers == 1:
@@ -559,7 +586,7 @@ class MainWindow(QMainWindow):
         if self.dm is None or self.dm_current_path is None:
             return
 
-        level, parts = self._dm_current_level()
+        level, parts, _ = self._dm_current_level()
 
         # we don't create_dataset datasets below experiment in this GUI
         if level in ("experiment", "category"):
@@ -719,7 +746,7 @@ class MainWindow(QMainWindow):
         Refresh the data manager panel.
         :return: no return value
         """
-        level, parts = self._dm_current_level()
+        level, parts, _ = self._dm_current_level()
         root, project, campaign, experiment, category = parts
         root = root if len(root) <= 40 else "…" + root[-39:]
         self.lbl_root.setText(f"Root: {root}")
@@ -773,7 +800,7 @@ class MainWindow(QMainWindow):
             self.dm_list.addItem(item)
         self.dm_schedule_save_button_state_update()
 
-    def dm_save_entire_tree(self):
+    def dm_save_branch(self):
         """
         Saves the entire DataLad Tree
         :return: no return value
@@ -781,10 +808,13 @@ class MainWindow(QMainWindow):
         if self.dm is None:
             return
 
+        # find the dataset path of the current dataset level given the current datamanager view
+        level, parts, dataset_path = self._dm_current_level()
+
         self._run_in_worker(
             dgapi.save_branch,
             refresh='dm',
-            path=self.dm.cfg.dm_root
+            path=dataset_path
         )
 
     def dm_show_selected_metadata(self):
@@ -935,7 +965,7 @@ class MainWindow(QMainWindow):
             return
 
         # where are we in the DM?
-        level, parts = self._dm_current_level()
+        level, parts, _ = self._dm_current_level()
         # parts = [root_dir, project, campaign, experiment, category]
         root_dir, project, campaign, experiment, category = parts
 
@@ -1074,43 +1104,6 @@ class MainWindow(QMainWindow):
                 return
         self.set_datamanager(dm)
 
-    def _start_dm_save_button_state_check(self):
-        """
-        Start one background status check on whether the datamanager tree has been saved.
-        """
-        if self.dm is None:
-            self.btn_save_all.setEnabled(False)
-            return
-
-        self._save_state_check_requested = False
-        self._save_state_check_running = True
-
-        dm = self.dm
-        dataset = dm.cfg.dm_root
-
-        def task():
-            try:
-                exists, installed, status = dm.get_status(
-                    dataset=dataset,
-                    recursive=True
-                )
-
-                if not exists or not installed or status is None:
-                    dirty = False
-                    message = "DataManager tree is not fully initialized."
-                else:
-                    dirty = any(entry.get("state") != "clean" for entry in status)
-                    if dirty:
-                        message = "DataManager tree has unsaved changes."
-                    else:
-                        message = "DataManager tree is clean."
-            except Exception as e:
-                dirty = False
-                message = f"Could not determine DataManager status: {e}"
-
-            self.save_state_checked.emit(dirty, message)
-
-        threading.Thread(target=task, daemon=True).start()
 
     def metadata_save_changes(self):
         """
