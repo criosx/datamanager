@@ -32,6 +32,31 @@ def _run_git(args: list[str], *, cwd: Path) -> subprocess.CompletedProcess:
     )
 
 
+def _resolve_sibling_name(dataset: str | os.PathLike,
+                          sibling_name: str | None = None,
+                          recursive: bool = False) -> str | None:
+    """
+    Determine the sibling name to use for pull/push operations.
+    If `sibling_name` is given, return it unchanged. Otherwise, prefer 'gin',
+    then 'origin', then fall back to the first configured sibling.
+    :param dataset: (str or os.PathLike) the dataset containing the sibling(s)
+    :param sibling_name: (str or None) sibling name to use, defaults to None
+    :param recursive: (bool) whether to recurse into siblings, defaults to False
+    :return: sibling name
+    """
+    if sibling_name is not None:
+        return sibling_name
+
+    ds = Dataset(str(Path(dataset).expanduser().resolve()))
+    sibs = ds.siblings(action="query", return_type="list", recursive=recursive)
+    names = [s["name"] for s in sibs if s.get("name")]
+    if "gin" in names:
+        return "gin"
+    if "origin" in names:
+        return "origin"
+    return names[0] if names else None
+
+
 def clone_from_remote(dest: str | os.PathLike,
                       source_url: str = None,
                       source_url_root: str = None,
@@ -143,7 +168,7 @@ def drop_content(dataset: str | os.PathLike, path: str | os.PathLike = None, rec
         _ = _run_git(["annex", "drop", str(path.name)], cwd=Path(str(dataset)))
 
 
-def find_dataset_root_and_rel(path: str | Path) -> tuple[Path | None, Path | None]:
+def find_dataset_root_and_rel(path: str | os.PathLike | Path) -> tuple[Path | None, Path | None]:
     """
     Walk up from `path` until we find a directory containing a dataset.
     Returns (ds_root, relpath_within_dataset) or (None, None) if not found.
@@ -542,7 +567,7 @@ def has_content(dataset: str | os.PathLike, path: str | os.PathLike) -> bool:
 
 def has_sibling(dataset: str | os.PathLike, sib_name: str | None = None):
     """
-    Checks is sibling under path is installed in dataset
+    Checks if sibling under path is installed in dataset
     :param dataset: path to dataset
     :param sib_name: (str) sibling name (i.e. GIN)
     :return: (bool) Whether a sibling exists in dataset, (dict) sibling query result
@@ -568,32 +593,44 @@ def has_sibling(dataset: str | os.PathLike, sib_name: str | None = None):
 
 def pull_from_remotes(dataset: str | os.PathLike,
                       recursive: bool = True,
-                      sibling_name: str = None) -> None:
+                      sibling_name: str | None = None) -> Dict[str, Any]:
     """
-    Pull latest history from GIN and merge.
+    Pull latest history from a sibling and merge.
+    Returns the post-operation git sync state without performing an extra fetch.
+
     :param dataset: (str) path to the dataset to update from remotes
     :param recursive: whether recursively pull from remotes, default True
     :param sibling_name: (str) name of the sibling datasets to pull from (such as 'gin' for GIN publishing),
-                         default: None (recommended), which self-determines the target to pull from
-    :return: no return value
+                         default: None, which self-determines the target to pull from
+    :return: (dict) post-operation git sync status
     """
+    dataset = Path(dataset).expanduser().resolve()
     ds = Dataset(str(dataset))
-    # ds.save_dataset(recursive=recursive, message='save_dataset before update from remote')
+    sibling_name = _resolve_sibling_name(dataset=dataset, sibling_name=sibling_name, recursive=recursive)
+    if not sibling_name:
+        raise RuntimeError("No remote target configured and no 'gin'/'origin' sibling found.")
+
     ds.update(recursive=recursive, how='merge', sibling=sibling_name)
     ds.get(recursive=recursive, get_data=False)
-    ds.save(recursive=recursive, message='updated from remote')
+    # saving here could create a new commit and the dataset would then be ahead of the remote
+    # saving should not be necessary after this operiation -> delete this line once convinced
+    # ds.save(recursive=recursive, message='updated from remote')
 
+    return get_git_sync_status(dataset=dataset, sibling_name=sibling_name, fetch=False)
 
 def push_to_remotes(dataset: str | os.PathLike, recursive: bool = True, message: str | None = None,
-                    sibling_name: str = None, push_annex_data: bool = True) -> None:
+                    sibling_name: str | None = None, push_annex_data: bool = True) -> Dict[str, Any]:
     """
     Save and push commits + annexed content to GIN.
+    Returns the post-operation git sync state without performing an extra fetch.
+
+
     :param dataset: (str, os.Pathlike) path to the dataset to push to GIN
     :param recursive: (bool) whether to recursively push subdatasets
     :param sibling_name: (str) name of the sibling datasets to push to GIN
     :param message: (str) optional commit message to push to GIN.
     :param push_annex_data: (bool) whether to push annexed content to GIN
-    :return: no return value
+    :return: (dict) post-operation git sync status
     """
     ds = Dataset(str(dataset))
     if message:
@@ -602,9 +639,7 @@ def push_to_remotes(dataset: str | os.PathLike, recursive: bool = True, message:
         ds.save(recursive=recursive)
 
     sibs = ds.siblings(action="query", return_type="list", recursive=recursive)
-    if sibling_name is None:
-        names = {s["name"] for s in sibs if s.get("name")}
-        sibling_name = "gin" if "gin" in names else ("origin" if "origin" in names else None)
+    sibling_name = _resolve_sibling_name(dataset=dataset, sibling_name=sibling_name, recursive=recursive)
     if not sibling_name:
         raise RuntimeError("No publication target configured and no 'gin'/'origin' sibling found.")
 
@@ -615,8 +650,11 @@ def push_to_remotes(dataset: str | os.PathLike, recursive: bool = True, message:
                 continue
             # run annex copy manually, since Datalad implementation proved to be brittle
             _ = _run_git(["config", f"remote.{sibling_name}.annex-ignore", "false"],
-                              cwd=Path(sibling["path"]))
+                         cwd=Path(sibling["path"]))
             _ = _run_git(["annex", "copy", "--to", sibling_name, "--all"], cwd=Path(sibling["path"]))
+
+    return get_git_sync_status(dataset=dataset, sibling_name=sibling_name, fetch=False)
+
 
 def read_gitignore(dataset_path: Path) -> list[str]:
     """
@@ -642,7 +680,7 @@ def read_gitignore(dataset_path: Path) -> list[str]:
     return patterns
 
 
-def remove_siblings(dataset: str | os.PathLike, sibling_name: str = 'gin', recursive: bool = False) -> None:
+def remove_siblings(dataset: str | os.PathLike, sibling_name: str | None = 'gin', recursive: bool = False) -> None:
     """
     Removes all sibling datasets from tree.
     :param dataset: (str or Path) root path to remove sibling datasets from
@@ -651,16 +689,11 @@ def remove_siblings(dataset: str | os.PathLike, sibling_name: str = 'gin', recur
     :return: no return value
     """
     ds_path = Path(dataset).expanduser().resolve()
-    ds = Dataset(str(ds_path))
-
-    if sibling_name is None:
-        sibs = ds.siblings(action="query", return_type="list", recursive=recursive)
-        names = {s["name"] for s in sibs if s.get("name")}
-        sibling_name = "gin" if "gin" in names else ("origin" if "origin" in names else None)
+    sibling_name = _resolve_sibling_name(dataset=ds_path, sibling_name=sibling_name, recursive=recursive)
     if not sibling_name:
         raise RuntimeError("No remote target configured and no 'gin'/'origin' sibling found.")
-
     dl.siblings(action='remove', dataset=ds_path, name=sibling_name, recursive=recursive)
+
 
 def save_branch(path: str | Path, recursive: bool = True, message: str = None) -> None:
     """
@@ -675,15 +708,17 @@ def save_branch(path: str | Path, recursive: bool = True, message: str = None) -
     path = Path(path).expanduser().resolve()
     ds_root = save_dataset(path=path, recursive=recursive, message=message)
     while True:
+        ds_child = ds_root
         ds_root = ds_root.parent
         ds = Dataset(str(ds_root))
         if ds.is_installed():
-            save_dataset(path=ds_root, recursive=False)
+            # only save the modified dataset, not other parent dataset components
+            dl.save(dataset=ds_root, path=ds_child, recursive=False)
         else:
             break
 
 
-def save_dataset(path: str | os.PathLike,
+def save_dataset(path: str | os.PathLike | Path,
                  recursive: bool = True,
                  message: str = None) -> Path:
     """
