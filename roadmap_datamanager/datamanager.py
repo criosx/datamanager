@@ -173,7 +173,8 @@ class DataManager:
             # merge any remote changes into superdataset before committing local changes
             dl.update(dataset=superds, recursive=False, how='merge')
             dl.create(path=str(path), dataset=str(superds), cfg_proc="text2git", force=force)
-            dl.save(dataset=superds, recursive=False)
+            # saving will be done in save_meta()
+            # dgapi.save_branch(path=superds, recursive=False)
 
         if dataset_type == 'experiment' and not (path / ".gitignore").is_file():
             (path / ".gitignore").write_text(GITIGNORE.strip() + "\n", encoding="utf-8")
@@ -221,8 +222,8 @@ class DataManager:
     def get_level(self, path: str | os.PathLike):
         """
         Determines the level of an item within the datamanager hierarchy and returns the path of the encompassing
-        dataset
-        .
+        dataset.
+        :param path: (str | Path) Path pointing to the item
         :return: (level, parts, ds_path)
                     level: ∈ {"root", "project", "campaign", "experiment", "category"}
                     parts: (list) of path parts after cfg.dm_root
@@ -232,14 +233,14 @@ class DataManager:
         level = "root"
         ds_path = None
 
-        root = Path(self.cfg.dm_root)
+        root = Path(self.cfg.dm_root).expanduser().resolve()
         cur = Path(path).expanduser().resolve()
 
         try:
             rel = cur.relative_to(root)
         except ValueError:
             level = "outside"
-            return level, pcec, None
+            return level, pcec, ds_path
 
         pcec[0] = str(root)
         ds_path = root
@@ -265,23 +266,15 @@ class DataManager:
         :param recursive: whether to recursively step into subdatasets
         :return: (tuple): (bool) dir exists, (bool) dataset is installed, (dict) status
         """
-
         if dataset is None:
             dataset = self.cfg.dm_root
-        dataset_path = Path(str(dataset)).expanduser().resolve()
-        if not dataset_path.is_dir():
-            return False, False, None
-        ds = Dataset(str(dataset_path))
-        if not ds.is_installed():
-            return True, False, None
-        status = ds.status(recursive=recursive)
-        return True, True, status
+        return dgapi.get_dataset_status(dataset=dataset, recursive=recursive)
 
     def init_tree(self, *,
                   project: Optional[str] = None,
                   campaign: Optional[str] = None,
                   experiment: Optional[str] = None,
-                  force = False) -> Path:
+                  force = False) -> Path | None:
         """
         Ensure the (user)/(project)/(campaign)/(experiment) dataset tree exists and is registered.
         Attach minimal JSON-LD at each level. Idempotent.
@@ -353,8 +346,9 @@ class DataManager:
         """
 
         src = Path(source).expanduser().resolve()
-        if category not in ALLOWED_CATEGORIES:
-            raise ValueError(f"category must be one of {ALLOWED_CATEGORIES}, got {category!r}")
+        # Don't enforce categories for now. Maybe remove entirely later
+        # if category not in ALLOWED_CATEGORIES:
+        #    raise ValueError(f"category must be one of {ALLOWED_CATEGORIES}, got {category!r}")
         if not src.exists():
             raise FileNotFoundError(src)
 
@@ -629,9 +623,9 @@ class DataManager:
         """
         Attach JSON-LD at dataset level to any file, folder, or the dataset itself using the MetaLad Python API.
         :param ds_path: (str, Path) path to the dataset
-        :param path: (str, Path) Relative path to the file or folder whose meta-data should be attached serving as and
+        :param path: (str, Path) Relative path to the file or folder whose metadata should be attached serving as and
                      identifier
-        :param name: (str) human-readable name for the file or folder whose meta-data will be saved.
+        :param name: (str) human-readable name for the file or folder whose metadata will be saved.
         :param dataset_type: (str) Designates the type of dataset. Options: 'root', 'project', 'campaign', 'experiment',
                                    or 'below experiment'. Content 'below experiment' is not a dataset, but files and
                                    folders that belong to an experiment dataset
@@ -656,7 +650,7 @@ class DataManager:
 
         # Commit metadata
         if not do_not_save:
-            dgapi.save_dataset(
+            dgapi.save_branch(
                 path=str(ds_path),
                 message=f"Metadata for {targetstr}",
                 recursive=False

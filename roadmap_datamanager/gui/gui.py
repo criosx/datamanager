@@ -8,7 +8,7 @@ import threading
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QThreadPool, Slot, QDir, QTimer, Signal
-from PySide6.QtGui import QPalette, QAction, QColor
+from PySide6.QtGui import QPalette, QAction, QColor, QIcon
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QComboBox, QDialog, QFileDialog, QFileSystemModel,
     QHBoxLayout, QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem,
@@ -33,7 +33,7 @@ METADATA_MANUAL_ADD_ITEMS = [
 class MainWindow(QMainWindow):
 
     # add a signal to class for background operation of checking the saving state of the datamanager tree
-    save_state_checked = Signal(bool, str)
+    save_state_checked = Signal(bool, str, object)
 
     def __init__(self):
         super().__init__()
@@ -105,11 +105,12 @@ class MainWindow(QMainWindow):
         self.statusBar().addPermanentWidget(self.busy_bar)
 
     @Slot(bool, str)
-    def _apply_dm_save_button_state(self, dirty: bool, message: str):
+    def _apply_dm_save_button_state(self, dirty: bool, message: str, dirty_names):
         """
         Apply the result of a background save-state check on the GUI thread.
         """
         self._save_state_check_running = False
+        self._dm_apply_dirty_item_markers(set(dirty_names or []))
 
         if hasattr(self, "btn_save_all"):
             self.btn_save_all.setEnabled(dirty)
@@ -300,6 +301,37 @@ class MainWindow(QMainWindow):
 
         self.setCentralWidget(container)
 
+    def _dm_apply_dirty_item_markers(self, dirty_names: set[str]):
+        """
+        Mark direct children of the current dataset that have unsaved changes.
+        """
+        dirty_icon = self.style().standardIcon(self.style().StandardPixmap.SP_BrowserReload)
+
+        for row in range(self.dm_list.count()):
+            item = self.dm_list.item(row)
+            item_name = item.data(Qt.ItemDataRole.UserRole + 1)
+            item_relpath = item.data(Qt.ItemDataRole.UserRole + 3)
+            is_dirty = str(item_relpath) in dirty_names
+            item.setData(Qt.ItemDataRole.UserRole + 2, is_dirty)
+
+            if is_dirty:
+                item.setIcon(dirty_icon)
+                tooltip = item.toolTip() or ""
+                if "Unsaved changes" not in tooltip:
+                    if tooltip:
+                        tooltip = f"{tooltip} | Unsaved changes"
+                    else:
+                        tooltip = "Unsaved changes"
+                    item.setToolTip(tooltip)
+            else:
+                item.setIcon(QIcon())
+                tooltip = item.toolTip() or ""
+                tooltip = tooltip.replace(" | Unsaved changes", "")
+                tooltip = tooltip.replace("Unsaved changes | ", "")
+                if tooltip == "Unsaved changes":
+                    tooltip = ""
+                item.setToolTip(tooltip)
+
     @staticmethod
     def _dm_classify_entry(path: Path) -> str:
         """
@@ -482,22 +514,22 @@ class MainWindow(QMainWindow):
         self._save_state_check_requested = False
         self._save_state_check_running = True
 
-
         # find the dataset path of the current dataset level given the current datamanager view
         level, parts, dataset_path = self._dm_current_level()
 
         def task():
+            dirty_names: set[str] = set()
             try:
                 exists, installed, status = self.dm.get_status(
                     dataset=dataset_path,
-                    recursive=True
+                    recursive=False
                 )
-
                 if not exists or not installed or status is None:
                     dirty = False
                     message = "DataManager tree is not fully initialized."
                 else:
                     dirty = any(entry.get("state") != "clean" for entry in status)
+                    dirty_names = dgapi.get_dirty_items(dataset_path, status)
                     if dirty:
                         message = "DataManager tree has unsaved changes."
                     else:
@@ -505,8 +537,7 @@ class MainWindow(QMainWindow):
             except Exception as e:
                 dirty = False
                 message = f"Could not determine DataManager status: {e}"
-
-            self.save_state_checked.emit(dirty, message)
+            self.save_state_checked.emit(dirty, message, dirty_names)
 
         threading.Thread(target=task, daemon=True).start()
 
@@ -746,7 +777,7 @@ class MainWindow(QMainWindow):
         Refresh the data manager panel.
         :return: no return value
         """
-        level, parts, _ = self._dm_current_level()
+        level, parts, parentds_path = self._dm_current_level()
         root, project, campaign, experiment, category = parts
         root = root if len(root) <= 40 else "…" + root[-39:]
         self.lbl_root.setText(f"Root: {root}")
@@ -766,18 +797,26 @@ class MainWindow(QMainWindow):
         # list children of current path
         # list children of current path
         self.dm_list.clear()
-        for child in self.dm_current_path.iterdir():
+        for child in self.dm_current_path.expanduser().resolve().iterdir():
             # still skip dot dirs/files
             if child.name.startswith("."):
                 continue
 
             kind = self._dm_classify_entry(child)
+            is_gitignored = dgapi.is_gitignored(parentds_path, child)
+            rel_path = child.relative_to(parentds_path)
 
             item = QListWidgetItem(child.name)
             item.setData(Qt.ItemDataRole.UserRole, str(child))
+            item.setData(Qt.ItemDataRole.UserRole + 1, child.name)
+            item.setData(Qt.ItemDataRole.UserRole + 2, False)  # flag whether listed in parentds_path/.gitignore
+            item.setData(Qt.ItemDataRole.UserRole + 3, rel_path)
 
             # color-code
-            if kind == "dataset":
+            if is_gitignored:
+                item.setForeground(QColor("red"))
+                item.setToolTip("Ignored by dataset .gitignore")
+            elif kind == "dataset":
                 item.setForeground(QColor("#1f6feb"))  # blue-ish
                 item.setToolTip("Dataset (DataLad/Git)")
             elif kind == "folder":

@@ -257,6 +257,75 @@ def get_dataset_nodetype(ds_path: str | Path):
     return node_type, ds_path
 
 
+def get_dataset_status(
+               dataset: str | os.PathLike = None,
+               recursive: bool = False):
+    """
+    Retrieves the DataLad status of a dataset.
+    :param dataset: path to the dataset, defaults to None which will retrieve the status of the entire repository.
+    :param recursive: whether to recursively step into subdatasets
+    :return: (tuple): (bool) dir exists, (bool) dataset is installed, (dict) status
+    """
+    dataset_path = Path(str(dataset)).expanduser().resolve()
+    if not dataset_path.is_dir():
+        return False, False, None
+    ds = Dataset(str(dataset_path))
+    if not ds.is_installed():
+        return True, False, None
+    status = ds.status(recursive=recursive)
+    return True, True, status
+
+
+def get_dirty_items(dataset_path: Path, status = None, return_top_level=True) -> set[str]:
+    """
+    Use DataLad's dataset status records to obtain a set of relative item paths in the dataset that have not been
+    saved, yet.
+    :param dataset_path: (str | Path) dataset path
+    :param status: (str) [Optional] the dataset status (if not provided), the status will be obtained in this function
+    :param return_top_level: (bool) [Optional] to return all ancestor prefixes of each dirty item relative to the
+                              dataset path. This is useful for viusalization of directories, where one wants to mark
+                              the entire branch as dirty not just the item (leaf).
+    :return: (set[str]) set of relative item paths for dirty items
+    """
+    dataset_path = Path(str(dataset_path)).expanduser().resolve()
+    if status is None:
+        _, _, status = get_dataset_status(dataset=dataset_path, recursive=False)
+
+    dirty_names: set[str] = set()
+    if not status:
+        return dirty_names
+
+    for entry in status:
+        if entry.get("state") == "clean":
+            continue
+        entry_path = entry.get("path")
+        if not entry_path:
+            continue
+        try:
+            entry_path = Path(str(entry_path)).expanduser().resolve()
+        except ValueError:
+            continue
+        # Skip the dataset root itself, list only children
+        if entry_path == dataset_path:
+            continue
+        try:
+            rel = entry_path.relative_to(dataset_path)
+        except ValueError:
+            continue
+        if not rel.parts:
+            continue
+        if return_top_level:
+            relpath = Path(rel.parts[0])
+            dirty_names.add(relpath.as_posix())
+            for part in rel.parts[1:]:
+                relpath = relpath / part
+                dirty_names.add(relpath.as_posix())
+        else:
+            dirty_names.add(rel.as_posix())
+
+    return dirty_names
+
+
 def get_git_sync_status(
         dataset: str | os.PathLike,
         sibling_name: str = "gin",
@@ -422,6 +491,35 @@ def get_git_sync_status(
         "remote": remote_info,
     }
 
+def is_gitignored(dataset_path: Path, child_path: Path) -> bool:
+    """
+    Return True if a direct child of the current dataset matches a simple dataset-local
+    .gitignore entry.
+    :param dataset_path: path to parent dataset
+    :param child_path: path to child item
+    :return: True if a direct child of the current dataset is listed in .gitignore
+    """
+    patterns = read_gitignore(dataset_path)
+    try:
+        rel = child_path.relative_to(dataset_path)
+    except ValueError:
+        return False
+
+    rel_str = rel.as_posix()
+    rel_dir_str = rel_str + "/"
+
+    for pattern in patterns:
+        pattern = pattern.strip()
+        if not pattern or pattern.startswith("#"):
+            continue
+
+        if pattern == rel_str:
+            return True
+        if child_path.is_dir() and pattern == rel_dir_str:
+            return True
+
+    return False
+
 
 def has_content(dataset: str | os.PathLike, path: str | os.PathLike) -> bool:
     """
@@ -520,6 +618,29 @@ def push_to_remotes(dataset: str | os.PathLike, recursive: bool = True, message:
                               cwd=Path(sibling["path"]))
             _ = _run_git(["annex", "copy", "--to", sibling_name, "--all"], cwd=Path(sibling["path"]))
 
+def read_gitignore(dataset_path: Path) -> list[str]:
+    """
+    Read simple dataset-local .gitignore patterns.
+    Currently, supports the common folder/file patterns used in this app.
+    :param dataset_path: (Path) path to dataset
+    :return: (list[str]) list of paths in .gitignore
+    """
+    gitignore_path = dataset_path / ".gitignore"
+    if not gitignore_path.is_file():
+        return []
+
+    patterns: list[str] = []
+    try:
+        for line in gitignore_path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            patterns.append(line)
+    except IOError:
+        return []
+
+    return patterns
+
 
 def remove_siblings(dataset: str | os.PathLike, sibling_name: str = 'gin', recursive: bool = False) -> None:
     """
@@ -541,16 +662,18 @@ def remove_siblings(dataset: str | os.PathLike, sibling_name: str = 'gin', recur
 
     dl.siblings(action='remove', dataset=ds_path, name=sibling_name, recursive=recursive)
 
-def save_branch(path: str | Path) -> None:
+def save_branch(path: str | Path, recursive: bool = True, message: str = None) -> None:
     """
     Saves an entire datalad branch, walking from the given dataset path up to root. The path given can point to
     content below the dataset.
 
     :param path: (str | Path) path to dataset or content nested within
+    :param recursive: (bool) whether to recursively step into the lowest-hierarchy subdatasets
+    :param message: (str) optional commit message to add only to the lowest-hierarchy dataset
     :return: No return value
     """
     path = Path(path).expanduser().resolve()
-    ds_root = save_dataset(path=path, recursive=True)
+    ds_root = save_dataset(path=path, recursive=recursive, message=message)
     while True:
         ds_root = ds_root.parent
         ds = Dataset(str(ds_root))
