@@ -354,7 +354,6 @@ def get_dirty_items(dataset_path: Path, status = None, return_top_level=True) ->
 
     return dirty_names
 
-
 def get_git_sync_status(
         dataset: str | Path | os.PathLike,
         sibling_name: str = "gin",
@@ -520,6 +519,137 @@ def get_git_sync_status(
         "remote": remote_info,
     }
 
+# Branch-level sync status: combine the status of a dataset and all installed parent datasets.
+def get_git_sync_status_branch(
+        dataset: str | Path | os.PathLike,
+        sibling_name: str = "gin",
+        branch: str | None = None,
+        fetch: bool = True,
+        include_current: bool = True,
+) -> Dict[str, Any]:
+    """
+    Determine the git sync status for the dataset containing `dataset` and all of its
+    parent datasets up to the top-most installed superdataset.
+
+    This is useful because DataLad changes in a child dataset can propagate upward:
+    saving or updating a child dataset may also cause parent datasets to become ahead,
+    behind, or diverged relative to their own remotes.
+
+    The function returns both the per-dataset status records and a combined branch-level
+    state.
+
+    Combined-state precedence:
+      - if any dataset check fails with ok=False -> "error"
+      - else if any dataset is "diverged" -> "diverged"
+      - else if any dataset is "behind" -> "behind"
+      - else if any dataset is "ahead" -> "ahead"
+      - else if any dataset is "no_remote" -> "no_remote"
+      - else if any dataset is "no_upstream" -> "no_upstream"
+      - else if any dataset is "detached_head" -> "detached_head"
+      - else if all checked datasets are "up_to_date" -> "up_to_date"
+      - otherwise -> "unknown"
+
+    :param dataset: Path to a dataset or a path within a dataset.
+    :param sibling_name: Preferred remote name, e.g. 'gin' or 'origin'.
+    :param branch: Optional local branch name. Defaults to the current branch of each dataset.
+    :param fetch: Whether to run `git fetch <remote_name>` before comparison for each dataset.
+    :param include_current: Whether to include the dataset containing `dataset` itself.
+    :return: Dictionary with combined branch status and per-dataset records.
+    """
+    dataset = Path(dataset).expanduser().resolve()
+    ds_root, _ = find_dataset_root_and_rel(dataset)
+    if ds_root is None:
+        return {
+            "ok": False,
+            "state": "not_dataset",
+            "message": f"Path is not inside an installed dataset: {dataset}",
+            "path": str(dataset),
+            "statuses": [],
+        }
+
+    ds_root = Path(ds_root).expanduser().resolve()
+    statuses: list[Dict[str, Any]] = []
+
+    current = ds_root if include_current else Dataset(str(ds_root)).get_superdataset()
+    if current is not None:
+        current = Path(current.path).expanduser().resolve() if hasattr(current, "path") else Path(current).expanduser().resolve()
+
+    while current is not None:
+        status = get_git_sync_status(
+            dataset=current,
+            sibling_name=sibling_name,
+            branch=branch,
+            fetch=fetch,
+            from_parent=False,
+        )
+        status["dataset_path"] = str(current)
+        statuses.append(status)
+
+        ds = Dataset(str(current))
+        parent = ds.get_superdataset()
+        if parent is None:
+            break
+        current = Path(parent.path).expanduser().resolve()
+
+    combined_ok = all(s.get("ok", False) for s in statuses)
+
+    states = [s.get("state") for s in statuses]
+    if any(not s.get("ok", False) for s in statuses):
+        combined_state = "error"
+    elif "diverged" in states:
+        combined_state = "diverged"
+    elif "behind" in states:
+        combined_state = "behind"
+    elif "ahead" in states:
+        combined_state = "ahead"
+    elif "no_remote" in states:
+        combined_state = "no_remote"
+    elif "no_upstream" in states:
+        combined_state = "no_upstream"
+    elif "detached_head" in states:
+        combined_state = "detached_head"
+    elif statuses and all(state == "up_to_date" for state in states):
+        combined_state = "up_to_date"
+    else:
+        combined_state = "unknown"
+
+    messages = [
+        f"{s.get('dataset_path')}: {s.get('message')}"
+        for s in statuses
+        if s.get("message")
+    ]
+
+    return {
+        "ok": combined_ok,
+        "state": combined_state,
+        "message": " | ".join(messages) if messages else None,
+        "path": str(ds_root),
+        "statuses": statuses,
+    }
+
+
+def get_parent_dataset(dataset: str | os.PathLike | Path) -> Path | None:
+    """
+    Return the installed parent dataset of `dataset`, if one exists.
+
+    The input should point to a dataset root. If the given path is not an installed
+    dataset or if no installed superdataset exists, return None.
+
+    :param dataset: (str | os.PathLike | Path) dataset path
+    :return: (Path | None) parent dataset path or None
+    """
+    dataset = Path(dataset).expanduser().resolve()
+    ds = Dataset(str(dataset))
+    if not ds.is_installed():
+        return None
+
+    parent = ds.get_superdataset()
+    if parent is None:
+        return None
+
+    return Path(parent.path).expanduser().resolve()
+
+
 def is_gitignored(dataset_path: Path, child_path: Path) -> bool:
     """
     Return True if a direct child of the current dataset matches a simple dataset-local
@@ -597,67 +727,116 @@ def has_sibling(dataset: str | os.PathLike, sib_name: str | None = None):
 
 def pull_from_remotes(dataset: str | os.PathLike,
                       recursive: bool = True,
-                      sibling_name: str | None = None) -> Dict[str, Any]:
+                      sibling_name: str | None = None,
+                      include_parents: bool = False) -> Dict[str, Any]:
     """
     Pull latest history from a sibling and merge.
-    Returns the post-operation git sync state without performing an extra fetch.
+    Optionally walk upward through installed parent datasets and update them as well.
+    Returns the post-operation git sync state of the originally requested dataset
+    without performing an extra fetch.
 
     :param dataset: (str) path to the dataset to update from remotes
-    :param recursive: whether recursively pull from remotes, default True
+    :param recursive: whether recursively pull from remotes for the starting dataset, default True
     :param sibling_name: (str) name of the sibling datasets to pull from (such as 'gin' for GIN publishing),
                          default: None, which self-determines the target to pull from
-    :return: (dict) post-operation git sync status
+    :param include_parents: (bool) whether to continue updating installed parent datasets upward in the tree
+    :return: (dict) post-operation git sync status of the originally requested dataset
     """
     dataset = Path(dataset).expanduser().resolve()
-    ds = Dataset(str(dataset))
-    sibling_name = _resolve_sibling_name(dataset=dataset, sibling_name=sibling_name, recursive=recursive)
-    if not sibling_name:
-        raise RuntimeError("No remote target configured and no 'gin'/'origin' sibling found.")
+    ds_root, _ = find_dataset_root_and_rel(dataset)
+    if ds_root is None:
+        raise RuntimeError(f"Path is not inside an installed dataset: {dataset}")
 
-    ds.update(recursive=recursive, how='merge', sibling=sibling_name)
-    ds.get(recursive=recursive, get_data=False)
-    # saving here could create a new commit and the dataset would then be ahead of the remote
-    # saving should not be necessary after this operiation -> delete this line once convinced
-    # ds.save(recursive=recursive, message='updated from remote')
+    ds_root = Path(ds_root).expanduser().resolve()
+    current = ds_root
+    first = True
 
-    return get_git_sync_status(dataset=dataset, sibling_name=sibling_name, fetch=False)
+    while current is not None:
+        ds = Dataset(str(current))
+        current_recursive = recursive if first else False
+        current_sibling = _resolve_sibling_name(dataset=current, sibling_name=sibling_name, recursive=current_recursive)
+        if not current_sibling:
+            raise RuntimeError("No remote target configured and no 'gin'/'origin' sibling found.")
 
-def push_to_remotes(dataset: str | os.PathLike, recursive: bool = True, message: str | None = None,
-                    sibling_name: str | None = None, push_annex_data: bool = True) -> Dict[str, Any]:
+        ds.update(recursive=current_recursive, how='merge', sibling=current_sibling)
+        ds.get(recursive=current_recursive, get_data=False)
+
+        if not include_parents:
+            break
+
+        parent = get_parent_dataset(current)
+        if parent is None:
+            break
+        current = Path(parent).expanduser().resolve()
+        first = False
+
+    return get_git_sync_status(dataset=ds_root, sibling_name=sibling_name, fetch=False)
+
+def push_to_remotes(dataset: str | os.PathLike,
+                    recursive: bool = True,
+                    message: str | None = None,
+                    sibling_name: str | None = None,
+                    push_annex_data: bool = True,
+                    include_parents: bool = False) -> Dict[str, Any]:
     """
     Save and push commits + annexed content to GIN.
-    Returns the post-operation git sync state without performing an extra fetch.
-
+    Optionally walk upward through installed parent datasets and push them as well.
+    Returns the post-operation git sync state of the originally requested dataset
+    without performing an extra fetch.
 
     :param dataset: (str, os.Pathlike) path to the dataset to push to GIN
-    :param recursive: (bool) whether to recursively push subdatasets
+    :param recursive: (bool) whether to recursively push subdatasets for the starting dataset
     :param sibling_name: (str) name of the sibling datasets to push to GIN
     :param message: (str) optional commit message to push to GIN.
     :param push_annex_data: (bool) whether to push annexed content to GIN
-    :return: (dict) post-operation git sync status
+    :param include_parents: (bool) whether to continue pushing installed parent datasets upward in the tree
+    :return: (dict) post-operation git sync status of the originally requested dataset
     """
-    ds = Dataset(str(dataset))
-    if message:
-        ds.save(recursive=recursive, message=message)
+    dataset = Path(dataset).expanduser().resolve()
+    ds_root, _ = find_dataset_root_and_rel(dataset)
+    if ds_root is None:
+        raise RuntimeError(f"Path is not inside an installed dataset: {dataset}")
+
+    ds_root = Path(ds_root).expanduser().resolve()
+
+    if include_parents:
+        save_branch(path=ds_root, recursive=recursive, message=message)
     else:
-        ds.save(recursive=recursive)
+        ds = Dataset(str(ds_root))
+        if message:
+            ds.save(recursive=recursive, message=message)
+        else:
+            ds.save(recursive=recursive)
 
-    sibs = ds.siblings(action="query", return_type="list", recursive=recursive)
-    sibling_name = _resolve_sibling_name(dataset=dataset, sibling_name=sibling_name, recursive=recursive)
-    if not sibling_name:
-        raise RuntimeError("No publication target configured and no 'gin'/'origin' sibling found.")
+    current = ds_root
+    first = True
+    while current is not None:
+        ds = Dataset(str(current))
+        current_recursive = recursive if first else False
+        sibs = ds.siblings(action="query", return_type="list", recursive=current_recursive)
+        current_sibling = _resolve_sibling_name(dataset=current, sibling_name=sibling_name, recursive=current_recursive)
+        if not current_sibling:
+            raise RuntimeError("No publication target configured and no 'gin'/'origin' sibling found.")
 
-    ds.push(to=sibling_name, recursive=recursive, data="nothing")
-    if push_annex_data:
-        for sibling in sibs:
-            if sibling["name"] != sibling_name:
-                continue
-            # run annex copy manually, since Datalad implementation proved to be brittle
-            _ = _run_git(["config", f"remote.{sibling_name}.annex-ignore", "false"],
-                         cwd=Path(sibling["path"]))
-            _ = _run_git(["annex", "copy", "--to", sibling_name, "--all"], cwd=Path(sibling["path"]))
+        ds.push(to=current_sibling, recursive=current_recursive, data="nothing")
+        if push_annex_data:
+            for sibling in sibs:
+                if sibling["name"] != current_sibling:
+                    continue
+                _ = _run_git(["config", f"remote.{current_sibling}.annex-ignore", "false"],
+                             cwd=Path(sibling["path"]))
+                _ = _run_git(["annex", "copy", "--to", current_sibling, "--all"], cwd=Path(sibling["path"]))
 
-    return get_git_sync_status(dataset=dataset, sibling_name=sibling_name, fetch=False)
+        if not include_parents:
+            break
+
+        parent = get_parent_dataset(current)
+        if parent is None:
+            break
+        current = Path(parent).expanduser().resolve()
+        first = False
+
+    return get_git_sync_status(dataset=ds_root, sibling_name=sibling_name, fetch=False)
 
 
 def read_gitignore(dataset_path: Path) -> list[str]:
