@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+from datetime import datetime
 import json
 import logging
 import sys
@@ -34,6 +36,7 @@ class MainWindow(QMainWindow):
 
     # add a signal to class for background operation of checking the saving state of the datamanager tree
     save_state_checked = Signal(bool, str, object)
+    remote_state_checked = Signal(str, object)
 
     def __init__(self):
         super().__init__()
@@ -83,7 +86,22 @@ class MainWindow(QMainWindow):
         # Background check state for global save-button updates
         self._save_state_check_running = False
         self._save_state_check_requested = False
-        self.save_state_checked.connect(self._apply_dm_save_button_state)
+        self.save_state_checked.connect(self._dm_apply_save_button_state)
+        self.remote_state_checked.connect(self._dm_apply_remote_state)
+
+        # Remote state dictionary
+        # items are of type
+        # {
+        #     "save_state_dirty": "clean" | "dirty",
+        #     "state": "unknown" | "checking" | "up_to_date" | "ahead" | "behind" | "diverged" | "no_remote" | "error",
+        #     "message": str | None,
+        #     "checked_at": datetime | None,
+        #     "checked_ok": bool,
+        #     "stale": bool,
+        # }
+        # keys a str of the dataset path
+        self.remote_state = {}
+        self.remote_check_intervall = 1200
 
         # bootstrap DM
         self.bootstrap_datamanager()
@@ -103,21 +121,6 @@ class MainWindow(QMainWindow):
         self.busy_bar.setVisible(False)
         # add to status bar:
         self.statusBar().addPermanentWidget(self.busy_bar)
-
-    @Slot(bool, str)
-    def _apply_dm_save_button_state(self, dirty: bool, message: str, dirty_names):
-        """
-        Apply the result of a background save-state check on the GUI thread.
-        """
-        self._save_state_check_running = False
-        self._dm_apply_dirty_item_markers(set(dirty_names or []))
-
-        if hasattr(self, "btn_save_all"):
-            self.btn_save_all.setEnabled(dirty)
-        self.status.showMessage(message)
-
-        if self._save_state_check_requested:
-            self._start_dm_save_button_state_check()
 
     def _choose_browser_root(self):
         path = QFileDialog.getExistingDirectory(self, "Select folder to browse")
@@ -238,6 +241,21 @@ class MainWindow(QMainWindow):
 
         dm_layout.addLayout(nav_bar)
 
+        # remote repository status
+        remote_row = QHBoxLayout()
+        self.btn_check_remote = QPushButton("Check Remote")
+        self.btn_update_remote = QPushButton("Update Remote")
+        self.lbl_remote = QLabel("no remote status")
+
+        self.btn_check_remote.clicked.connect(self.dm_check_remote_button)
+        self.btn_update_remote.clicked.connect(self.dm_update_remote_button)
+
+        remote_row.addWidget(self.btn_check_remote)
+        remote_row.addWidget(self.btn_update_remote)
+        remote_row.addWidget(self.lbl_remote)
+
+        dm_layout.addLayout(remote_row)
+
         # list of children at current level
         self.dm_list = QListWidget()
         self.dm_list.itemActivated.connect(self._dm_open_item)
@@ -277,6 +295,7 @@ class MainWindow(QMainWindow):
         editor_row.addWidget(self.meta_apply_btn, 2)
         editor_row.addWidget(self.meta_save_btn, 2)
 
+
         meta_layout.addLayout(editor_row)
         splitter.addWidget(self.meta_panel)
 
@@ -309,7 +328,7 @@ class MainWindow(QMainWindow):
 
         for row in range(self.dm_list.count()):
             item = self.dm_list.item(row)
-            item_name = item.data(Qt.ItemDataRole.UserRole + 1)
+            # item_name = item.data(Qt.ItemDataRole.UserRole + 1)
             item_relpath = item.data(Qt.ItemDataRole.UserRole + 3)
             is_dirty = str(item_relpath) in dirty_names
             item.setData(Qt.ItemDataRole.UserRole + 2, is_dirty)
@@ -331,6 +350,126 @@ class MainWindow(QMainWindow):
                 if tooltip == "Unsaved changes":
                     tooltip = ""
                 item.setToolTip(tooltip)
+
+
+    @Slot(bool, str)
+    def _dm_apply_save_button_state(self, dirty: bool, message: str, dirty_names):
+        """
+        Apply the result of a background save-state check on the GUI thread.
+        """
+        self._save_state_check_running = False
+        self._dm_apply_dirty_item_markers(set(dirty_names or []))
+
+        if hasattr(self, "btn_save_all"):
+            self.btn_save_all.setEnabled(dirty)
+        self.status.showMessage(message)
+
+        if self._save_state_check_requested:
+            self._dm_start_save_button_state_check()
+
+    @Slot(str, object)
+    def _dm_apply_remote_state(self, key: str, entry: object):
+        """
+        Apply the result of a background remote-state check on the GUI thread.
+        """
+        if not isinstance(entry, dict):
+            return
+
+        self.remote_state[key] = entry
+
+        current_ds = self._dm_current_dataset_root()
+        if current_ds is None or str(current_ds) != key:
+            return
+
+        if self.remote_state[key].get("save_state_dirty", False):
+            self.btn_update_remote.setEnabled(False)
+            self.btn_update_remote.setText("Save first ...")
+        else:
+            state = self.remote_state[key].get("state")
+            if state == "ahead":
+                self.btn_update_remote.setEnabled(True)
+                self.btn_update_remote.setText("Push to remote")
+            elif state == "behind":
+                self.btn_update_remote.setEnabled(True)
+                self.btn_update_remote.setText("Pull from remote")
+            else:
+                self.btn_update_remote.setEnabled(False)
+                self.btn_update_remote.setText("See remote state ...")
+
+        add_txt = '(stale)' if self.remote_state[key].get("stale", True) else '(current)'
+        state_txt = self.remote_state[key].get('state', 'unknown')
+        self.lbl_remote.setText(f"Local repository is: {state_txt} {add_txt}")
+        self.lbl_remote.setToolTip(self.remote_state[key].get('message') or "")
+
+    def _dm_check_remote(self, path: str | os.PathLike | Path, dirty: bool | None) -> None:
+        """
+        Checks the remote state of the given dataset if no previous remote check has been performed. If the path to
+        a nested item is provided, it will walk up the file hierarchy to the encompassing dataset.
+        :param path: the path of the dataset or nested item.
+        :param dirty:
+        :return:
+        """
+        def check_remote_now(entry: dict):
+            remote_status = dgapi.get_git_sync_status(path)
+            entry["state"] = remote_status['state']
+            entry["message"] = remote_status['message']
+            entry['checked_ok'] = remote_status['ok']
+            entry["checked_at"] = datetime.now()
+            entry["stale"] = False
+            return entry
+
+        path: Path = Path(path).expanduser().resolve()
+        ds_path, _ = dgapi.find_dataset_root_and_rel(path)
+        if ds_path is None:
+            return
+        ds_path = Path(ds_path).expanduser().resolve()
+        key = str(ds_path)
+
+        prev = dict(self.remote_state.get(key, {}))
+        entry = dict(prev)
+
+        if dirty is None:
+            # Manual remote check: require a pre-existing entry and keep its known dirty state.
+            if key not in self.remote_state:
+                return
+            entry["save_state_dirty"] = prev.get("save_state_dirty", False)
+            entry = check_remote_now(entry)
+
+        elif not dirty and key not in self.remote_state:
+            # Dataset is clean and no remote check has been performed yet.
+            entry["save_state_dirty"] = dirty
+            entry = check_remote_now(entry)
+
+        elif not dirty and key in self.remote_state:
+            # Dataset is clean but has been checked before.
+            entry["save_state_dirty"] = dirty
+            checked_at = prev.get("checked_at")
+            is_stale = prev.get("stale", True)
+            if checked_at is None:
+                entry = check_remote_now(entry)
+            else:
+                difftime = datetime.now() - checked_at
+                if (difftime.total_seconds() > self.remote_check_intervall) or is_stale:
+                    entry = check_remote_now(entry)
+
+        elif dirty and key not in self.remote_state:
+            # Dataset is dirty and remote has never been checked before.
+            entry = {
+                "save_state_dirty": dirty,
+                "state": prev.get("state", "unknown"),
+                "message": prev.get("message"),
+                "checked_at": prev.get("checked_at"),
+                "checked_ok": prev.get("checked_ok", False),
+                "stale": True,
+            }
+
+        elif dirty and key in self.remote_state:
+            # Dataset is dirty and remote has been checked previously.
+            entry["save_state_dirty"] = dirty
+            entry["stale"] = True
+
+        self.remote_state_checked.emit(key, entry)
+
 
     @staticmethod
     def _dm_classify_entry(path: Path) -> str:
@@ -426,6 +565,24 @@ class MainWindow(QMainWindow):
             self.dm_refresh_panel()
         # else: it's a file/symlink — ignore or handle later (open in Finder, fetch annex, etc.)
 
+
+    def _dm_schedule_save_button_state_update(self):
+        """
+        Schedule a background check for unsaved changes in the entire datamanager tree.
+        Repeated requests while a check is already running are coalesced into one follow-up run.
+        """
+        if self.dm is None:
+            if hasattr(self, "btn_save_all"):
+                self.btn_save_all.setEnabled(False)
+            return
+
+        self._save_state_check_requested = True
+        if self._save_state_check_running:
+            return
+
+        self._dm_start_save_button_state_check()
+
+
     @Slot()
     def _dm_selection_changed(self):
         items = self.dm_list.selectedItems()
@@ -443,6 +600,51 @@ class MainWindow(QMainWindow):
         self._pending_meta_item = items[0]
         # Debounce: restart the timer each time selection changes
         self._meta_update_timer.start(300)  # ms; tweak as desired
+
+
+    def _dm_start_save_button_state_check(self):
+        """
+        Start one background status check on whether the datamanager tree has been saved.
+        """
+        if self.dm is None:
+            self.btn_save_all.setEnabled(False)
+            return
+
+        self._save_state_check_requested = False
+        self._save_state_check_running = True
+        # find the dataset path of the current dataset level given the current datamanager view
+        level, parts, dataset_path = self._dm_current_level()
+
+        def task():
+            if self.dm is None:
+                return
+            dirty_names: set[str] = set()
+            try:
+                exists, installed, status = self.dm.get_status(
+                    dataset=dataset_path,
+                    recursive=False
+                )
+                if not exists or not installed or status is None:
+                    dirty = False
+                    message = "DataManager tree is not fully initialized."
+                else:
+                    dirty = any(entry.get("state") != "clean" for entry in status)
+                    dirty_names = dgapi.get_dirty_items(dataset_path, status)
+                    if dirty:
+                        message = "DataManager tree has unsaved changes."
+                    else:
+                        message = "DataManager tree is clean."
+            except Exception as e:
+                dirty = False
+                message = f"Could not determine DataManager status: {e}"
+
+            # check the remote storage
+            self._dm_check_remote(dataset_path, dirty)
+
+            self.save_state_checked.emit(dirty, message, dirty_names)
+
+        threading.Thread(target=task, daemon=True).start()
+
 
     @Slot()
     def _dm_update_metadata_for_current_selection(self):
@@ -497,49 +699,10 @@ class MainWindow(QMainWindow):
         paths2 = []
         for p in paths:
             ds_root, rel = dgapi.find_dataset_root_and_rel(p)
-            if ds_root is None or rel is None:
-                continue
-            rel_str = "." if rel == Path("..") else rel.as_posix()
-            paths2.append((ds_root, rel_str))
+            if ds_root is not None and rel is not None:
+                paths2.append((ds_root, rel.as_posix()))
+
         return paths2
-
-    def _start_dm_save_button_state_check(self):
-        """
-        Start one background status check on whether the datamanager tree has been saved.
-        """
-        if self.dm is None:
-            self.btn_save_all.setEnabled(False)
-            return
-
-        self._save_state_check_requested = False
-        self._save_state_check_running = True
-
-        # find the dataset path of the current dataset level given the current datamanager view
-        level, parts, dataset_path = self._dm_current_level()
-
-        def task():
-            dirty_names: set[str] = set()
-            try:
-                exists, installed, status = self.dm.get_status(
-                    dataset=dataset_path,
-                    recursive=False
-                )
-                if not exists or not installed or status is None:
-                    dirty = False
-                    message = "DataManager tree is not fully initialized."
-                else:
-                    dirty = any(entry.get("state") != "clean" for entry in status)
-                    dirty_names = dgapi.get_dirty_items(dataset_path, status)
-                    if dirty:
-                        message = "DataManager tree has unsaved changes."
-                    else:
-                        message = "DataManager tree is clean."
-            except Exception as e:
-                dirty = False
-                message = f"Could not determine DataManager status: {e}"
-            self.save_state_checked.emit(dirty, message, dirty_names)
-
-        threading.Thread(target=task, daemon=True).start()
 
     def _worker_started(self):
         self._active_workers += 1
@@ -599,10 +762,38 @@ class MainWindow(QMainWindow):
         Clones the GIN superdataset into an empty datamanager directory
         :return: no return value
         """
+        if self.dm is None:
+            return
         self._run_in_worker(
             self.dm.clone_from_remote,
             dest=self.dm_current_path
         )
+
+    def _dm_current_dataset_root(self) -> Path | None:
+        """
+        Return the enclosing dataset root for the current DM path.
+        """
+        if self.dm_current_path is None:
+            return None
+        ds_path, _ = dgapi.find_dataset_root_and_rel(Path(self.dm_current_path).expanduser().resolve())
+        if ds_path is None:
+            return None
+        return Path(ds_path).expanduser().resolve()
+
+    def dm_check_remote_button(self):
+        """
+        Triggers the 'check remote repository' functionality after pressing the 'check remote' button
+        :return: no return value
+        """
+        ds_path = self._dm_current_dataset_root()
+        if ds_path is None:
+            return
+        self._run_in_worker(
+            self._dm_check_remote,
+            path=ds_path,
+            dirty=None
+        )
+
 
     def dm_create_dataset_here(self):
         """
@@ -746,6 +937,9 @@ class MainWindow(QMainWindow):
         :param existing: (str) how to handle existing remote siblings, defaults to 'skip'.
         :return: no return value
         """
+        if self.dm is None:
+            return
+
         paths = []
         if entire_tree:
             dm_root = getattr(self.dm.cfg, "dm_root", None)
@@ -837,7 +1031,7 @@ class MainWindow(QMainWindow):
                 item.setToolTip("Other")
 
             self.dm_list.addItem(item)
-        self.dm_schedule_save_button_state_update()
+        self._dm_schedule_save_button_state_update()
 
     def dm_save_branch(self):
         """
@@ -869,7 +1063,7 @@ class MainWindow(QMainWindow):
         target_path = Path(item.data(Qt.ItemDataRole.UserRole)) if item else self.dm_current_path
 
         ds_root, rel = dgapi.find_dataset_root_and_rel(target_path)
-        if ds_root is None:
+        if ds_root is None or rel is None:
             self.meta_title.setText("Metadata: —")
             self.metadata_update_viewer("No enclosing dataset found for this selection.")
             self.meta_current_ds_root = None
@@ -888,7 +1082,7 @@ class MainWindow(QMainWindow):
             return
 
         self.meta_current_ds_root = ds_root
-        self.meta_current_rel = rel
+        self.meta_current_rel = rel.as_posix()
         # if nothing yet, start from empty dict to allow adding
         self.meta_current_payload = dict(payload) if payload else {}
 
@@ -962,21 +1156,44 @@ class MainWindow(QMainWindow):
             except Exception as e:
                 self.logviewer_append_text(f"[WARN] Could not GIN publish {p}: {e}\n")
 
-    def dm_schedule_save_button_state_update(self):
+    def dm_update_remote_button(self):
         """
-        Schedule a background check for unsaved changes in the entire datamanager tree.
-        Repeated requests while a check is already running are coalesced into one follow-up run.
+        Triggers the 'update from/to remote' functionality aftter clicking on the update remote button
+        :return: no return value
         """
-        if self.dm is None:
-            if hasattr(self, "btn_save_all"):
-                self.btn_save_all.setEnabled(False)
+        if self.dm_current_path is None:
             return
 
-        self._save_state_check_requested = True
-        if self._save_state_check_running:
+        ds_path = self._dm_current_dataset_root()
+        if ds_path is None:
+            return
+        key = str(ds_path)
+        if key not in self.remote_state:
             return
 
-        self._start_dm_save_button_state_check()
+        state = self.remote_state[key].get('state')
+        if self.remote_state[key].get('save_state_dirty', False):
+            return
+
+        if state == 'ahead':
+            self._run_in_worker(
+                dgapi.push_to_remotes,
+                dataset=ds_path,
+                recursive=True
+            )
+        elif state == 'behind':
+            self._run_in_worker(
+                dgapi.pull_from_remotes,
+                dataset=ds_path,
+                recursive=True
+            )
+        else:
+            return
+
+        # mark remote status as stale so the next refresh re-checks it
+        self.remote_state[key]["stale"] = True
+        self.dm_refresh_panel()
+
 
     def fileviewer_install_selected_sources_into_dm(self):
         """
@@ -1189,6 +1406,8 @@ class MainWindow(QMainWindow):
             return
 
         meta = self.meta_current_payload
+        if meta is None:
+            return
         _ = meta.pop("@context", None)
         _ = meta.pop("@id", None)
         _ = meta.pop("@type", None)

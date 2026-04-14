@@ -13,7 +13,7 @@ import os
 from roadmap_datamanager import metadata as md
 
 
-def _run_git(args: list[str], *, cwd: Path) -> subprocess.CompletedProcess:
+def _run_git(args: list[str], *, cwd: str | Path | os.PathLike) -> subprocess.CompletedProcess:
     """
     Run a git command in `cwd` without changing the process working directory.
     """
@@ -77,7 +77,7 @@ def clone_from_remote(dest: str | os.PathLike,
     :return: no return value
     """
 
-    dest = Path(dest).expanduser().resolve()
+    dest: Path = Path(dest).expanduser().resolve()
     dest.mkdir(parents=True, exist_ok=True)
     if any(dest.iterdir()):
         raise RuntimeError(f"Destination path {dest} must be empty.")
@@ -140,11 +140,12 @@ def drop_content(dataset: str | os.PathLike, path: str | os.PathLike = None, rec
     :param recursive: Whether to recursively step into subdatasets.
     :return: no return value
     """
-    if path is not None and recursive:
+    if recursive and path is not None:
         raise ValueError("Providing file paths and recursive=True is incompatible.")
-    dataset = Path(dataset).expanduser().resolve()
+
+    dataset: Path = Path(dataset).expanduser().resolve()
     if path is not None:
-        path = Path(path)
+        path: Path = Path(path)
         if not path.is_absolute():
             path = dataset / path
         path = path.expanduser()
@@ -165,7 +166,10 @@ def drop_content(dataset: str | os.PathLike, path: str | os.PathLike = None, rec
             # run annex copy manually, since Datalad implementation proved to be brittle
             _ = _run_git(["annex", "drop", "--all"], cwd=Path(sibling["path"]))
     else:
-        _ = _run_git(["annex", "drop", str(path.name)], cwd=Path(str(dataset)))
+        if path is None:
+            _ = _run_git(["annex", "drop", "--all"], cwd=Path(str(dataset)))
+        else:
+            _ = _run_git(["annex", "drop", str(path.name)], cwd=Path(str(dataset)))
 
 
 def find_dataset_root_and_rel(path: str | os.PathLike | Path) -> tuple[Path | None, Path | None]:
@@ -176,7 +180,7 @@ def find_dataset_root_and_rel(path: str | os.PathLike | Path) -> tuple[Path | No
 
     :param path: (Path or str) item path to start walking up from
     """
-    path = Path(path).resolve()
+    path: Path = Path(path).resolve()
     ds_root = None
     rel = None
     if path.exists() or path.is_symlink():
@@ -255,7 +259,7 @@ def get_dataset_nodetype(ds_path: str | Path):
     :param ds_path: (str or Path) dataset path
     :return: (str, str | Path) node type, path to dataset
     """
-    ds_path = Path(str(ds_path)).expanduser().resolve()
+    ds_path: Path = Path(str(ds_path)).expanduser().resolve()
     stepup_counter = 0
 
     if ds_path.is_file() or ds_path.is_symlink():
@@ -352,7 +356,7 @@ def get_dirty_items(dataset_path: Path, status = None, return_top_level=True) ->
 
 
 def get_git_sync_status(
-        dataset: str | os.PathLike,
+        dataset: str | Path | os.PathLike,
         sibling_name: str = "gin",
         branch: str | None = None,
         fetch: bool = True,
@@ -553,8 +557,8 @@ def has_content(dataset: str | os.PathLike, path: str | os.PathLike) -> bool:
     :param path: absolute or relative path to content file
     :return: (bool) whether the conten is locally available
     """
-    dataset = Path(dataset).expanduser().resolve()
-    path = Path(path)
+    dataset: Path = Path(dataset).expanduser().resolve()
+    path: Path = Path(path)
     if not path.is_absolute():
         path = dataset / path
     path = path.expanduser()
@@ -707,8 +711,13 @@ def save_branch(path: str | Path, recursive: bool = True, message: str = None) -
     """
     path = Path(path).expanduser().resolve()
     ds_root = save_dataset(path=path, recursive=recursive, message=message)
+    if ds_root is None:
+        return
     while True:
         ds_child = ds_root
+        if ds_root.parent == ds_root:
+            # reached highest file system leavel
+            break
         ds_root = ds_root.parent
         ds = Dataset(str(ds_root))
         if ds.is_installed():
@@ -720,7 +729,7 @@ def save_branch(path: str | Path, recursive: bool = True, message: str = None) -
 
 def save_dataset(path: str | os.PathLike | Path,
                  recursive: bool = True,
-                 message: str = None) -> Path:
+                 message: str = None) -> Path | None:
     """
     Saves the current dataset to disk. Path can point to nested item in the dataset. The function will walk up
     the file tree until it finds a dataset.
@@ -732,6 +741,9 @@ def save_dataset(path: str | os.PathLike | Path,
     """
     path = Path(path).resolve().absolute()
     ds_root, rel = find_dataset_root_and_rel(path)
+
+    if ds_root is None:
+        return None
 
     if str(rel) == '.':
         # save dataset
@@ -756,25 +768,45 @@ def siblings(dataset, *, recursive=False, action='query'):
     return sibs if sibs else []
 
 
-def set_git_annex_path():
-    def which_in_zsh(exe="git-annex"):
-        shell = os.environ.get("SHELL", "/bin/zsh")
-        # -i => interactive so .zshrc is sourced; use the shell builtin `command -v`
-        cmd = f"command -v {shlex.quote(exe)} || true"
-        p = subprocess.run([shell, "-i", "-c", cmd],
-                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+def set_git_annex_path() -> bool:
+    def which_any(names: list[str]) -> str | None:
+        for name in names:
+            found = shutil.which(name)
+            if found:
+                return found
+        return None
+
+    def which_in_shell(exe: str = "git-annex") -> str | None:
+        if os.name == "nt":
+            shell = os.environ.get("COMSPEC", "cmd.exe")
+            cmd = [shell, "/c", "where", exe]
+        else:
+            shell = os.environ.get("SHELL", "/bin/zsh")
+            cmd = [shell, "-i", "-c", f"command -v {shlex.quote(exe)} || true"]
+
+        p = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
         path = p.stdout.strip().splitlines()[-1] if p.stdout else ""
         return path or None
 
-    if shutil.which("git-annex") is not None:
+    candidates = ["git-annex"]
+    if os.name == "nt":
+        candidates = ["git-annex.exe", "git-annex.bat", "git-annex.cmd", "git-annex"]
+
+    path = which_any(candidates)
+    if path:
         return True
 
-    path = which_in_zsh("git-annex")
+    path = which_in_shell("git-annex")
     if path:
-        os.environ["PATH"] = f"{os.path.dirname(path)}:{os.environ.get('PATH', '')}"
+        os.environ["PATH"] = f"{Path(path).parent}{os.pathsep}{os.environ.get('PATH', '')}"
         return True
-    else:
-        return False
+
+    return False
 
 
 def ssh_to_https(u: str) -> str:
