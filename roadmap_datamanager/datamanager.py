@@ -412,9 +412,16 @@ class DataManager:
         record = meta.get(mode=mode)
         return record
 
-    def publish_lazy_to_remote(self, *, sibling_name: str = "gin", repo_name: str = "datamanager", dataset=None,
-                               access_protocol: str = "ssh", credential: Optional[str] = None,
-                               private: bool = False, message: str | None = None, existing: str = 'skip') -> None:
+    def publish_lazy_to_remote(self, *,
+                               sibling_name: str = "gin",
+                               repo_name: str | None = None,
+                               dataset=None,
+                               access_protocol:
+                               str = "ssh",
+                               credential: Optional[str] = None,
+                               private: bool = False,
+                               message: str | None = None,
+                               existing: str = 'skip') -> None:
         """
         Publish the minimal ancestor needed to expose `dataset` on the remote, then push.
         Strategy: climb to the nearest ancestor that already has `sibling_name`,
@@ -423,6 +430,9 @@ class DataManager:
         # normalize inputs
         start_path = Path(dataset or self.cfg.dm_root).expanduser().resolve()
         root_path = Path(self.cfg.dm_root).resolve()
+
+        if repo_name is None:
+            repo_name = self.cfg.user_name
 
         if not Dataset(str(start_path)).is_installed():
             raise RuntimeError(f"Not a DataLad dataset: {start_path}")

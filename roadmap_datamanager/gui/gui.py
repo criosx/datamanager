@@ -208,7 +208,7 @@ class MainWindow(QMainWindow):
         top_bar.addWidget(self.lbl_project)
         top_bar.addWidget(self.lbl_campaign)
         top_bar.addWidget(self.lbl_experiment)
-        top_bar.addWidget(self.lbl_category)
+        # top_bar.addWidget(self.lbl_category)
         top_bar.addStretch(1)
         dm_layout.addLayout(top_bar)
 
@@ -386,12 +386,21 @@ class MainWindow(QMainWindow):
             self.btn_update_remote.setText("Save first ...")
         else:
             state = self.remote_state[key].get("state")
-            if state == "ahead":
+            if state == 'up_to_date':
+                self.btn_update_remote.setEnabled(False)
+                self.btn_update_remote.setText("...")
+            elif state == "ahead":
                 self.btn_update_remote.setEnabled(True)
                 self.btn_update_remote.setText("Push to remote")
             elif state == "behind":
                 self.btn_update_remote.setEnabled(True)
                 self.btn_update_remote.setText("Pull from remote")
+            elif state == "diverged":
+                self.btn_update_remote.setEnabled(True)
+                self.btn_update_remote.setText("Resolve divergence")
+            elif state == "no_remote":
+                self.btn_update_remote.setEnabled(True)
+                self.btn_update_remote.setText("Publish new")
             else:
                 self.btn_update_remote.setEnabled(False)
                 self.btn_update_remote.setText("See remote state ...")
@@ -645,6 +654,19 @@ class MainWindow(QMainWindow):
 
         threading.Thread(target=task, daemon=True).start()
 
+    def _dm_set_current_path_stale(self):
+        """
+        Sets the current dm working path as stale for remote repository check
+        :return: no return value
+        """
+        if self.dm_current_path is None:
+            return
+        path = Path(self.dm_current_path).expanduser().resolve()
+        key = str(path)
+        if key not in self.remote_state:
+            return
+        self.remote_state[key]['stale'] = True
+
 
     @Slot()
     def _dm_update_metadata_for_current_selection(self):
@@ -848,7 +870,8 @@ class MainWindow(QMainWindow):
             project, campaign = parts[1], parts[2]
             self._run_in_worker(self.dm.init_tree, project=project, campaign=campaign, experiment=name)
 
-        # after creating, refresh the panel so the new item shows up
+        # after creating, refresh the panel so the new item shows up, set remote information for path as stale
+        self._dm_set_current_path_stale()
         self.dm_refresh_panel()
 
     def dm_drop_selected(self):
@@ -1161,7 +1184,7 @@ class MainWindow(QMainWindow):
         Triggers the 'update from/to remote' functionality aftter clicking on the update remote button
         :return: no return value
         """
-        if self.dm_current_path is None:
+        if self.dm is None or self.dm_current_path is None:
             return
 
         ds_path = self._dm_current_dataset_root()
@@ -1176,23 +1199,29 @@ class MainWindow(QMainWindow):
             return
 
         if state == 'ahead':
+            # mark remote status as stale so the next refresh re-checks it
+            self.remote_state[key]["stale"] = True
             self._run_in_worker(
                 dgapi.push_to_remotes,
+                refresh='dm',
                 dataset=ds_path,
-                recursive=True
+                recursive=False
             )
-        elif state == 'behind':
+        elif state == 'behind' or state == 'diverged':
+            # mark remote status as stale so the next refresh re-checks it
+            self.remote_state[key]["stale"] = True
             self._run_in_worker(
                 dgapi.pull_from_remotes,
+                refresh='dm',
                 dataset=ds_path,
-                recursive=True
+                recursive=False
             )
-        else:
-            return
-
-        # mark remote status as stale so the next refresh re-checks it
-        self.remote_state[key]["stale"] = True
-        self.dm_refresh_panel()
+        elif state == 'no_remote':
+            self.remote_state[key]["stale"] = True
+            self._run_in_worker(
+                self.dm.publish_lazy_to_remote,
+                dataset=ds_path,
+            )
 
 
     def fileviewer_install_selected_sources_into_dm(self):
@@ -1283,6 +1312,7 @@ class MainWindow(QMainWindow):
                     QMessageBox.critical(self, "Install failed", f"Could not install {src}:\n{e}")
                     # continue
 
+        self._dm_set_current_path_stale()
         self.dm_refresh_panel()
         self.status.showMessage("Installed into subfolder of experiment.")
 
