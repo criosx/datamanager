@@ -5,7 +5,6 @@ from datetime import datetime
 import json
 import logging
 import sys
-import threading
 
 from pathlib import Path
 
@@ -1410,36 +1409,25 @@ class MainWindow(QMainWindow):
             self.log_view.verticalScrollBar().maximum())  # Scroll to bottom
 
     def select_remote(self):
-        default_user = "fhein"
-        default_repo = "datamanager"
-        default_protocol = "SSH"
+        if self.dm is None or self.dm.cfg is None:
+            default_user = "fhein"
+            default_repo = "datamanager"
+            default_hostname = "gin.g-node.org"
+        else:
+            default_user = self.dm.cfg.GIN_user
+            default_repo = self.dm.cfg.GIN_repo
+            if default_repo is None:
+                default_repo = self.dm.cfg.user_name
+            default_hostname = self.dm.cfg.GIN_url
 
-        # If we already have a URL, you can parse it to prefill:
-        try:
-            current = getattr(self.dm.cfg, "GIN_url", "") if self.dm else ""
-            # naive parse:
-            # git@gin.g-node.org:user/repo.git  OR  https://gin.g-node.org/user/repo.git
-            if current:
-                if current.startswith("git@"):
-                    default_protocol = "SSH"
-                    tail = current.split(":", 1)[1]
-                elif current.startswith("https://"):
-                    default_protocol = "HTTPS"
-                    tail = current.split("gin.g-node.org/", 1)[1]
-                else:
-                    tail = ""
-                if tail:
-                    parts = tail.rstrip(".git").split("/", 1)
-                    if len(parts) == 2:
-                        default_user, default_repo = parts
-        except Exception:
-            pass
-
-        dlg = GinRemoteDialog(self, default_user=default_user, default_repo=default_repo,
-                              default_protocol=default_protocol)
+        dlg = GinRemoteDialog(self,
+                              default_user=default_user,
+                              default_repo=default_repo,
+                              default_hostname=default_hostname
+                              )
         if dlg.exec() == QDialog.DialogCode.Accepted:
-            url = dlg.url()
-            repo = dlg.repo()
+            url = dlg.hostname()
+            repo = default_repo
             username = dlg.username()
             # Store to config
             if self.dm is not None:
