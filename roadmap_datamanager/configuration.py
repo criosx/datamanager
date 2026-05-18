@@ -352,6 +352,7 @@ def load_config(
 
     try:
         raw = json.loads(cfg_path.read_text())
+        print(f"Loaded config from {cfg_path}.")
     except (json.JSONDecodeError, OSError, NotADirectoryError):
         return config_cls()
 
