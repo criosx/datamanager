@@ -80,12 +80,15 @@ def UI_fragment_app_storage(cfg,
 
     if gitignore_folders:
         st.text(f"Some storage folders are not archived due to frequent in-place modification: {gitignore_folders}")
+        st.text("Archived copies can be made on the respective subpage of the app or manually.")
+        '''
         if st.button("Make an archived copy of the storage folder(s)."):
             for folder in gitignore_folders:
                 archive_dir = exp_dir / f'{folder}_archive'
                 if archive_dir.exists():
                     shutil.rmtree(archive_dir)
                 shutil.copytree((exp_dir / folder), archive_dir)
+        '''
 
     return cfg, False
 
