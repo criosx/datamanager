@@ -7,7 +7,7 @@ from datetime import datetime
 from dataclasses import dataclass, field, fields, MISSING
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
-from typing import Any, Optional, Dict, ClassVar, Type, TypeVar
+from typing import Any, Optional, Dict, ClassVar, Type, TypeVar, Iterable
 
 from roadmap_datamanager import metadata as md
 from roadmap_datamanager import datalad_gin_api as dgapi
@@ -67,6 +67,25 @@ class BaseConfig:
     # Datamanager root directory
     dm_root: str = None
 
+    def save(self):
+        return save_persistent_cfg(self)
+
+    def save_subset(self, path, **kwargs):
+        return save_config_subset(self, path, **kwargs)
+
+    def load_subset(self, path, **kwargs):
+        return load_config_subset(self, path, **kwargs)
+
+    @classmethod
+    def load(cls):
+        return load_config(
+            cls,
+            env_var=cls.CONFIG_ENV_VAR,
+            app_name=cls.CONFIG_APP_NAME,
+            app_author=cls.CONFIG_APP_AUTHOR,
+            filename=cls.CONFIG_FILENAME
+        )
+
 
 def _filter_to_dataclass_fields(data: dict[str, Any], config_cls: Type[T]) -> dict[str, Any]:
     result: dict[str, Any] = {}
@@ -100,6 +119,142 @@ def _make_json_safe(obj):
     if isinstance(obj, list):
         return [_make_json_safe(v) for v in obj]
     return obj
+
+
+def _as_dataclass_dict(data: Any) -> dict[str, Any]:
+    """
+    Convert a dataclass instance or dictionary to a plain dictionary.
+    """
+    if is_dataclass(data):
+        return asdict(data)
+    if isinstance(data, dict):
+        return dict(data)
+    raise TypeError("Configuration data must be a dataclass instance or a dictionary.")
+
+
+def config_subset(
+    data: Any,
+    *,
+    prefixes: Iterable[str] = (),
+    groups: Iterable[str] = (),
+    include: Iterable[str] = (),
+    exclude: Iterable[str] = (),
+) -> dict[str, Any]:
+    """
+    Return a subset of configuration values.
+
+    Fields can be selected by:
+    - explicit field names via include
+    - field-name prefixes, e.g. prefixes=("pse_",)
+    - dataclass field metadata, e.g. field(default=..., metadata={"config_group": "pse"})
+
+    The returned dictionary is JSON-safe.
+    """
+    raw = _as_dataclass_dict(data)
+    include_set = set(include)
+    exclude_set = set(exclude)
+    prefix_tuple = tuple(prefixes)
+    group_set = set(groups)
+
+    selected_names: set[str] = set(include_set)
+
+    if prefix_tuple:
+        selected_names.update(name for name in raw if name.startswith(prefix_tuple))
+
+    if group_set and is_dataclass(data):
+        for f in fields(data):
+            config_group = f.metadata.get("config_group")
+            config_groups = f.metadata.get("config_groups")
+
+            if config_group in group_set:
+                selected_names.add(f.name)
+
+            if config_groups and group_set.intersection(config_groups):
+                selected_names.add(f.name)
+
+    if not selected_names:
+        selected_names = set(raw)
+
+    selected_names.difference_update(exclude_set)
+
+    return _make_json_safe({name: raw[name] for name in selected_names if name in raw})
+
+def load_config_subset(
+    data: Any,
+    path: str | Path,
+    *,
+    prefixes: Iterable[str] = (),
+    groups: Iterable[str] = (),
+    include: Iterable[str] = (),
+    exclude: Iterable[str] = (),
+):
+    """
+    Load a configuration subset and overwrite matching members
+    in an existing dataclass instance.
+
+    Only fields that exist in the dataclass and pass the filters
+    are updated.
+
+    Returns the modified dataclass instance.
+    """
+
+    if not is_dataclass(data):
+        raise TypeError("data must be a dataclass instance")
+
+    cfg_path = Path(path).expanduser()
+
+    if not cfg_path.exists():
+        return data
+
+    try:
+        loaded = json.loads(cfg_path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return data
+
+    if not isinstance(loaded, dict):
+        return data
+
+    # Optional: apply same selection logic
+    selected = config_subset(
+        loaded,
+        prefixes=prefixes,
+        groups=groups,
+        include=include,
+        exclude=exclude,
+    )
+
+    valid_fields = {f.name for f in fields(data)}
+
+    for key, value in selected.items():
+        if key in valid_fields:
+            setattr(data, key, value)
+
+    return data
+
+def save_config_subset(
+    data: Any,
+    path: str | Path,
+    *,
+    prefixes: Iterable[str] = (),
+    groups: Iterable[str] = (),
+    include: Iterable[str] = (),
+    exclude: Iterable[str] = (),
+) -> Path:
+    """
+    Save a subset of a configuration dataclass or dictionary to a user-provided path.
+    """
+    subset = config_subset(
+        data,
+        prefixes=prefixes,
+        groups=groups,
+        include=include,
+        exclude=exclude,
+    )
+
+    cfg_path = Path(path).expanduser()
+    cfg_path.parent.mkdir(parents=True, exist_ok=True)
+    cfg_path.write_text(json.dumps(subset, indent=2))
+    return cfg_path
 
 
 def bootstrap_config(path, cfg):
@@ -236,11 +391,7 @@ def save_config(
     )
     cfg_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Normalize input
-    if is_dataclass(data):
-        data = asdict(data)
-
-    safe_data = _make_json_safe(data)
+    safe_data = _make_json_safe(_as_dataclass_dict(data))
     cfg_path.write_text(json.dumps(safe_data, indent=2))
     return cfg_path
 
