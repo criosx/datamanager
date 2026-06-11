@@ -398,6 +398,17 @@ class DataManager:
         # self.save_dataset(dataset=str(ep), recursive=True, message=f"Installed {rename or src.name}")
         return final_target
 
+    def get_experiment_version(self, project: str, experiment: str) -> tuple[str, str]:
+        """Return (dataset_id, head_sha) for the experiment dataset.
+
+        Used by roadmap-datahub to build the archive_ref in dm.data.ready:
+        "{dataset_id}:{head_sha}:{rel_path}".  Call immediately after
+        install_into_tree() so HEAD reflects the commit that installed the file.
+        """
+        exp_path = Path(self.cfg.dm_root) / self.cfg.user_name / project / experiment
+        ds = Dataset(str(exp_path))
+        return ds.id, ds.repo.get_hexsha()
+
     @staticmethod
     def load_meta(ds_path: str | Path, *, path: str | Path | None = None, mode: str = 'meta') -> Dict[str, Any]:
         """
