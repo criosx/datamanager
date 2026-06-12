@@ -353,7 +353,7 @@ class DataManager:
             raise FileNotFoundError(src)
 
         # make sure the nested dataset structure exists for project/campaign/experiment
-        ep = self.init_tree(project=project, campaign=campaign, experiment=experiment)
+        ep = self.init_tree(project=project, campaign=campaign, experiment=experiment, force=True)
 
         # make sure that the category subfolder exists
         cat_path = ep / category
