@@ -1,1 +1,2 @@
-/roadmap_datamanager.egg-info/
+*.egg-info/
+*.py[cod]
